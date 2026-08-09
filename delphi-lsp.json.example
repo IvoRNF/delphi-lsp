@@ -1,0 +1,11 @@
+{
+  "project": "C:/work/MyApp/MyApp.dproj",
+  "delphiDir": "C:/work/shared-delphi",
+  "searchPaths": [
+    "C:/work/shared-delphi/source",
+    "C:/work/components"
+  ],
+  "includePaths": [
+    "C:/work/shared-delphi/include"
+  ]
+}
