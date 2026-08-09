@@ -38,7 +38,8 @@
       "C:/Program Files (x86)/madCollection/madShell/BDS4",
       "C:/Users/AQUASOFT/Documents/projects/delphi"
     ],
-    "includePaths": [
+    "includePaths":[],
+    "includePaths_": [
       "z:/Indy10/Lib/Protocols",
       "z:/Indy10/Lib/Core",
       "z:/Indy10/Lib/System",

@@ -208,6 +208,15 @@ func (s *Server) lookup(m rpcMessage) {
 	word := wordAt(d.Text, p.Position)
 	hits := s.definitionLocations(d, p.Position, word)
 	if m.Method == "textDocument/hover" {
+		if unit := d.useAt(p.Position); unit != nil {
+			contents := "```delphi\nunit " + unit.Name + "\n```"
+			if location := s.unitLocation(unit.Name); location != nil {
+				contents += "\n\nSource: " + location.URI
+			}
+			hoverRange := unit.Range
+			s.reply(m.ID, Hover{Contents: MarkupContent{"markdown", contents}, Range: &hoverRange})
+			return
+		}
 		symbol := s.symbolNamed(word)
 		if symbol == nil {
 			s.reply(m.ID, nil)

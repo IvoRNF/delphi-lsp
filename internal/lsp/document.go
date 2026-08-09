@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	symbolModule   = 2
 	symbolClass    = 5
 	symbolMethod   = 6
 	symbolProperty = 7
@@ -17,25 +18,36 @@ const (
 )
 
 type Symbol struct {
-	Name          string
-	Detail        string
-	Documentation string
-	Owner         string
-	Kind          int
-	Range         Range
-	Selection     Range
-	Scope         Range
+	Name           string
+	Detail         string
+	Documentation  string
+	Owner          string
+	Kind           int
+	Range          Range
+	Selection      Range
+	Scope          Range
+	Implementation bool
 }
 
 type Document struct {
 	URI, Text   string
 	Symbols     []Symbol
+	Uses        []UnitReference
 	Diagnostics []Diagnostic
+}
+
+// UnitReference is a unit name in a Delphi uses clause.
+type UnitReference struct {
+	Name  string
+	Range Range
 }
 
 var declaration = regexp.MustCompile(`(?i)^\s*(procedure|function|constructor|destructor|type|var|const|property)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(.*)$`)
 var typedVariable = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:\s*([^;]+);`)
 var typeDefinition = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(class|record)\b`)
+var unitHeader = regexp.MustCompile(`(?i)^\s*unit\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;`)
+var usesStart = regexp.MustCompile(`(?i)^\s*uses\b(.*)$`)
+var unitName = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_.]*)`)
 
 func Parse(uri, text string) *Document {
 	document := &Document{URI: uri, Text: text}
@@ -43,6 +55,7 @@ func Parse(uri, text string) *Document {
 	active := []bool{true}
 	inVarSection, routineBody := false, false
 	inTypeSection := false
+	inImplementation, inUses := false, false
 	currentRoutine, currentTypeIndex, routineDepth := -1, -1, 0
 	currentType := ""
 	endPosition := func(line int) Position {
@@ -82,6 +95,31 @@ func Parse(uri, text string) *Document {
 			continue
 		}
 		if !active[len(active)-1] {
+			continue
+		}
+		if match := unitHeader.FindStringSubmatch(line); match != nil {
+			start := strings.Index(strings.ToLower(line), strings.ToLower(match[1]))
+			selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(match[1])}}
+			document.Symbols = append(document.Symbols, Symbol{Name: match[1], Detail: "unit " + match[1], Kind: symbolModule, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection})
+			continue
+		}
+		if strings.EqualFold(trimmed, "implementation") {
+			inImplementation, inUses, inTypeSection, inVarSection = true, false, false, false
+			continue
+		}
+		if match := usesStart.FindStringSubmatch(line); match != nil {
+			inUses = true
+			addUses(document, match[1], lineNumber, len(line)-len(match[1]))
+			if strings.Contains(match[1], ";") {
+				inUses = false
+			}
+			continue
+		}
+		if inUses {
+			addUses(document, line, lineNumber, 0)
+			if strings.Contains(line, ";") {
+				inUses = false
+			}
 			continue
 		}
 
@@ -139,7 +177,7 @@ func Parse(uri, text string) *Document {
 			}
 			nameStart := start + strings.LastIndex(rawName, ".") + 1
 			selection := Range{Start: Position{Line: lineNumber, Character: nameStart}, End: Position{Line: lineNumber, Character: nameStart + len(name)}}
-			symbol := Symbol{Name: name, Detail: strings.TrimSpace(match[1] + " " + rawName + match[3]), Documentation: summaryBefore(lines, lineNumber), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}}
+			symbol := Symbol{Name: name, Detail: strings.TrimSpace(match[1] + " " + rawName + match[3]), Documentation: summaryBefore(lines, lineNumber), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}, Implementation: inImplementation && kind == symbolFunction}
 			document.Symbols = append(document.Symbols, symbol)
 			if word == "type" && (strings.Contains(strings.ToLower(match[3]), "= class") || strings.Contains(strings.ToLower(match[3]), "= record")) {
 				closeType(lineNumber - 1)
@@ -200,6 +238,22 @@ func Parse(uri, text string) *Document {
 	}
 	sort.SliceStable(document.Symbols, func(i, j int) bool { return document.Symbols[i].Name < document.Symbols[j].Name })
 	return document
+}
+
+func addUses(document *Document, text string, lineNumber, offset int) {
+	cursor := 0
+	for _, part := range strings.Split(text, ",") {
+		if semicolon := strings.Index(part, ";"); semicolon >= 0 {
+			part = part[:semicolon]
+		}
+		match := unitName.FindStringSubmatch(part)
+		if match != nil {
+			start := strings.Index(strings.ToLower(part), strings.ToLower(match[1]))
+			character := offset + cursor + start
+			document.Uses = append(document.Uses, UnitReference{Name: match[1], Range: Range{Start: Position{Line: lineNumber, Character: character}, End: Position{Line: lineNumber, Character: character + len(match[1])}}})
+		}
+		cursor += len(part) + 1
+	}
 }
 
 func addTypedVariables(document *Document, line string, lineNumber int, owner string) bool {

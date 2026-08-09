@@ -3,6 +3,14 @@ package lsp
 import "strings"
 
 func (s *Server) definitionLocations(current *Document, position Position, name string) []Location {
+	if unit := current.useAt(position); unit != nil {
+		if location := s.unitLocation(unit.Name); location != nil {
+			return []Location{*location}
+		}
+	}
+	if implementation := s.routineImplementationAt(current, position, name); implementation != nil {
+		return []Location{*implementation}
+	}
 	routine := routineAt(current, position)
 	if routine != nil {
 		var locals []Location
@@ -58,4 +66,53 @@ func memberOwnerAt(document *Document, position Position, routine *Symbol) strin
 		}
 	}
 	return ""
+}
+
+func (d *Document) useAt(position Position) *UnitReference {
+	for index := range d.Uses {
+		unit := &d.Uses[index]
+		if position.Line == unit.Range.Start.Line && position.Character >= unit.Range.Start.Character && position.Character <= unit.Range.End.Character {
+			return unit
+		}
+	}
+	return nil
+}
+
+func (s *Server) unitLocation(name string) *Location {
+	for uri, document := range s.docs {
+		for _, symbol := range document.Symbols {
+			if symbol.Kind == symbolModule && strings.EqualFold(symbol.Name, name) {
+				location := Location{URI: uri, Range: symbol.Selection}
+				return &location
+			}
+		}
+	}
+	return nil
+}
+
+// routineImplementationAt redirects a declaration header to its implementation.
+// It also covers class method declarations, whose symbol kind is symbolMethod.
+func (s *Server) routineImplementationAt(current *Document, position Position, name string) *Location {
+	for _, symbol := range current.Symbols {
+		if !isRoutineSymbol(symbol) || symbol.Implementation || !sameRangePosition(symbol.Selection, position) || !strings.EqualFold(symbol.Name, name) {
+			continue
+		}
+		for uri, document := range s.docs {
+			for _, candidate := range document.Symbols {
+				if candidate.Implementation && strings.EqualFold(candidate.Name, symbol.Name) && strings.EqualFold(candidate.Owner, symbol.Owner) {
+					location := Location{URI: uri, Range: candidate.Selection}
+					return &location
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func isRoutineSymbol(symbol Symbol) bool {
+	return symbol.Kind == symbolFunction || symbol.Kind == symbolMethod
+}
+
+func sameRangePosition(r Range, position Position) bool {
+	return position.Line == r.Start.Line && position.Character >= r.Start.Character && position.Character <= r.End.Character
 }
