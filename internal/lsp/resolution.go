@@ -1,6 +1,10 @@
 package lsp
 
-import "strings"
+import (
+	"path/filepath"
+	"strconv"
+	"strings"
+)
 
 func (s *Server) definitionLocations(current *Document, position Position, name string) []Location {
 	if unit := current.useAt(position); unit != nil {
@@ -43,7 +47,7 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 			}
 		}
 	}
-	return matches
+	return uniqueLocations(matches)
 }
 
 func routineAt(document *Document, position Position) *Symbol {
@@ -115,4 +119,31 @@ func isRoutineSymbol(symbol Symbol) bool {
 
 func sameRangePosition(r Range, position Position) bool {
 	return position.Line == r.Start.Line && position.Character >= r.Start.Character && position.Character <= r.End.Character
+}
+
+func uniqueLocations(locations []Location) []Location {
+	seen := map[string]bool{}
+	unique := make([]Location, 0, len(locations))
+	for _, location := range locations {
+		key := canonicalURI(location.URI) + "|" + positionKey(location.Range.Start) + "|" + positionKey(location.Range.End)
+		if !seen[key] {
+			seen[key] = true
+			unique = append(unique, location)
+		}
+	}
+	return unique
+}
+
+func canonicalURI(raw string) string {
+	if path := uriPath(raw); path != "" {
+		if absolute, err := filepath.Abs(path); err == nil {
+			path = absolute
+		}
+		return strings.ToLower(filepath.Clean(path))
+	}
+	return strings.ToLower(raw)
+}
+
+func positionKey(position Position) string {
+	return strconv.Itoa(position.Line) + ":" + strconv.Itoa(position.Character)
 }
