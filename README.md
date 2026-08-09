@@ -1,6 +1,6 @@
 # delphi-lsp
 
-A small, dependency-free Delphi/Object Pascal language server written in Go. It speaks LSP over stdio and works with Neovim's built-in client.
+A small, dependency-free Delphi/Object Pascal language server written in Go. It speaks LSP over stdio and works with Neovim's built-in client, it is on development , i am using gpt-5.6-terra for this project and maintence will be chalenge.
 
 ## Included
 
