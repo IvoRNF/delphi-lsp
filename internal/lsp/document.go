@@ -52,7 +52,10 @@ var usesStart = regexp.MustCompile(`(?i)^\s*uses\b(.*)$`)
 var unitName = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_.]*)`)
 
 func Parse(uri, text string) *Document {
-	document := &Document{URI: uri, Text: text}
+	// LSP requires publishDiagnostics.diagnostics to be an array. Keep this
+	// non-nil even when parsing finds no diagnostics so JSON encodes it as []
+	// rather than null (which some clients, including Neovim, cannot handle).
+	document := &Document{URI: uri, Text: text, Diagnostics: []Diagnostic{}}
 	lines := strings.Split(text, "\n")
 	active := []bool{true}
 	inVarSection, routineBody := false, false
