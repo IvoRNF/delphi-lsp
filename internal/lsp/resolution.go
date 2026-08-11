@@ -40,11 +40,9 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 		}
 	}
 	var matches []Location
-	for uri, document := range s.docs {
-		for _, symbol := range document.Symbols {
-			if symbol.Owner == "" && strings.EqualFold(symbol.Name, name) {
-				matches = append(matches, Location{URI: uri, Range: symbol.Selection})
-			}
+	for _, ref := range s.symbolRefs(name) {
+		if ref.symbol.Owner == "" {
+			matches = append(matches, Location{URI: ref.uri, Range: ref.symbol.Selection})
 		}
 	}
 	return uniqueLocations(matches)
@@ -83,12 +81,20 @@ func (d *Document) useAt(position Position) *UnitReference {
 }
 
 func (s *Server) unitLocation(name string) *Location {
-	for uri, document := range s.docs {
-		for _, symbol := range document.Symbols {
-			if symbol.Kind == symbolModule && strings.EqualFold(symbol.Name, name) {
-				location := Location{URI: uri, Range: symbol.Selection}
-				return &location
+	if uri := s.unitURI(name); uri != "" {
+		s.ensureParsed(uri)
+		if d := s.document(uri); d != nil {
+			for i := range d.Symbols {
+				sym := &d.Symbols[i]
+				if sym.Kind == symbolModule && strings.EqualFold(sym.Name, name) {
+					return &Location{URI: uri, Range: sym.Selection}
+				}
 			}
+		}
+	}
+	for _, ref := range s.symbolRefs(name) {
+		if ref.symbol.Kind == symbolModule {
+			return &Location{URI: ref.uri, Range: ref.symbol.Selection}
 		}
 	}
 	return nil
@@ -97,16 +103,15 @@ func (s *Server) unitLocation(name string) *Location {
 // routineImplementationAt redirects a declaration header to its implementation.
 // It also covers class method declarations, whose symbol kind is symbolMethod.
 func (s *Server) routineImplementationAt(current *Document, position Position, name string) *Location {
-	for _, symbol := range current.Symbols {
-		if !isRoutineSymbol(symbol) || symbol.Implementation || !sameRangePosition(symbol.Selection, position) || !strings.EqualFold(symbol.Name, name) {
+	for i := range current.Symbols {
+		symbol := &current.Symbols[i]
+		if !isRoutineSymbol(*symbol) || symbol.Implementation || !sameRangePosition(symbol.Selection, position) || !strings.EqualFold(symbol.Name, name) {
 			continue
 		}
-		for uri, document := range s.docs {
-			for _, candidate := range document.Symbols {
-				if candidate.Implementation && strings.EqualFold(candidate.Name, symbol.Name) && strings.EqualFold(candidate.Owner, symbol.Owner) {
-					location := Location{URI: uri, Range: candidate.Selection}
-					return &location
-				}
+		for _, ref := range s.symbolRefs(symbol.Name) {
+			candidate := ref.symbol
+			if candidate.Implementation && strings.EqualFold(candidate.Name, symbol.Name) && strings.EqualFold(candidate.Owner, symbol.Owner) {
+				return &Location{URI: ref.uri, Range: candidate.Selection}
 			}
 		}
 	}

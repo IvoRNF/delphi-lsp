@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"bufio"
 	"regexp"
 	"sort"
 	"strings"
@@ -316,14 +317,48 @@ func wordAt(text string, position Position) string {
 		position.Character = len(line)
 	}
 	start, end := position.Character, position.Character
-	isWord := func(character byte) bool {
-		return character == '_' || character >= '0' && character <= '9' || character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z'
-	}
-	for start > 0 && isWord(line[start-1]) {
+	for start > 0 && isWordChar(line[start-1]) {
 		start--
 	}
-	for end < len(line) && isWord(line[end]) {
+	for end < len(line) && isWordChar(line[end]) {
 		end++
 	}
 	return line[start:end]
+}
+
+func isWordChar(character byte) bool {
+	return character == '_' ||
+		character >= '0' && character <= '9' ||
+		character >= 'a' && character <= 'z' ||
+		character >= 'A' && character <= 'Z'
+}
+
+// prefixAt returns the partial identifier immediately before the cursor, used
+// to scope completion results to what the user has already typed.
+func prefixAt(text string, position Position) string {
+	lines := strings.Split(text, "\n")
+	if position.Line < 0 || position.Line >= len(lines) {
+		return ""
+	}
+	line := lines[position.Line]
+	if position.Character > len(line) {
+		position.Character = len(line)
+	}
+	start := position.Character
+	for start > 0 && isWordChar(line[start-1]) {
+		start--
+	}
+	return line[start:position.Character]
+}
+
+// unitNameOf extracts the unit name from the top of a file without a full
+// parse, stopping early so the background indexer can map unit names cheaply.
+func unitNameOf(text string) string {
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for lines := 0; lines < 60 && scanner.Scan(); lines++ {
+		if match := unitHeader.FindStringSubmatch(scanner.Text()); match != nil {
+			return match[1]
+		}
+	}
+	return ""
 }

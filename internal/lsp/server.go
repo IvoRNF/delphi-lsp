@@ -8,8 +8,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 )
+
+// maxIndexWorkers bounds the number of files parsed concurrently by the
+// background indexer. Parsing is CPU-bound regex work, so a small pool is
+// enough and keeps memory usage predictable.
+const maxIndexWorkers = 4
 
 type rpcMessage struct {
 	JSONRPC string          `json:"jsonrpc,omitempty"`
@@ -17,15 +24,52 @@ type rpcMessage struct {
 	ID      json.RawMessage `json:"id,omitempty"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
+
+// symbolRef is an indexed occurrence of a symbol in the workspace.
+type symbolRef struct {
+	uri    string
+	symbol Symbol
+}
+
 type Server struct {
-	in    *bufio.Reader
-	out   io.Writer
+	in  *bufio.Reader
+	out io.Writer
+
+	mu    sync.RWMutex
 	docs  map[string]*Document
 	roots map[string]bool
+
+	// byName indexes every indexed symbol by its lowercased name so global
+	// lookups (definition, hover, workspace symbols) are O(1) instead of
+	// scanning every document on every request.
+	byName map[string][]symbolRef
+	// docNames tracks, per document URI, the lowercased names it contributed
+	// to byName so edits can remove stale entries without a full scan.
+	docNames map[string][]string
+	// units maps a lowercased unit name to the URI that declares it. It is
+	// filled by the background indexer and lets uses-clause navigation
+	// resolve without a full parse of the target file.
+	units map[string]string
+	// pendingQueue/pendingSet hold files awaiting background indexing.
+	// Lazy loading: files are queued during the workspace walk and parsed in
+	// the background; a request that needs an unparsed file parses it on
+	// demand instead of waiting for the whole workspace.
+	pendingQueue []string
+	pendingSet   map[string]bool
+	active       int
 }
 
 func NewServer(in io.Reader, out io.Writer) *Server {
-	s := &Server{in: bufio.NewReader(in), out: out, docs: map[string]*Document{}, roots: map[string]bool{}}
+	s := &Server{
+		in:         bufio.NewReader(in),
+		out:        out,
+		docs:       map[string]*Document{},
+		roots:      map[string]bool{},
+		byName:     map[string][]symbolRef{},
+		docNames:   map[string][]string{},
+		units:      map[string]string{},
+		pendingSet: map[string]bool{},
+	}
 	if config := os.Getenv("DELPHI_LSP_CONFIG"); config != "" {
 		s.addConfig(config)
 	}
@@ -97,7 +141,8 @@ func (s *Server) handle(m rpcMessage) {
 		if p.RootURI != "" {
 			s.roots[p.RootURI] = true
 		}
-		// Reply first: configured source trees can be large.
+		// Reply first: configured source trees can be large. Indexing is
+		// deferred to the background so the client never waits on startup.
 		s.reply(m.ID, map[string]any{"capabilities": map[string]any{"textDocumentSync": 1, "hoverProvider": true, "definitionProvider": true, "referencesProvider": true, "completionProvider": map[string]any{"triggerCharacters": []string{"."}}, "documentSymbolProvider": true, "workspaceSymbolProvider": true, "workspace": map[string]any{"workspaceFolders": map[string]bool{"supported": true, "changeNotifications": true}}}, "serverInfo": map[string]string{"name": "delphi-lsp", "version": "0.1.0"}})
 	case "initialized":
 		s.indexRoots()
@@ -127,16 +172,15 @@ func (s *Server) handle(m rpcMessage) {
 			TextDocument TextDocumentIdentifier `json:"textDocument"`
 		}
 		json.Unmarshal(m.Params, &p)
-		delete(s.docs, p.TextDocument.URI)
+		s.closeDocument(p.TextDocument.URI)
 		s.notify("textDocument/publishDiagnostics", map[string]any{"uri": p.TextDocument.URI, "diagnostics": []Diagnostic{}})
 	case "textDocument/documentSymbol":
 		var p struct {
 			TextDocument TextDocumentIdentifier `json:"textDocument"`
 		}
 		json.Unmarshal(m.Params, &p)
-		d := s.docs[p.TextDocument.URI]
 		out := []map[string]any{}
-		if d != nil {
+		if d := s.document(p.TextDocument.URI); d != nil {
 			for _, x := range d.Symbols {
 				out = append(out, map[string]any{"name": x.Name, "detail": x.Detail, "kind": x.Kind, "range": x.Range, "selectionRange": x.Selection})
 			}
@@ -149,7 +193,9 @@ func (s *Server) handle(m rpcMessage) {
 		json.Unmarshal(m.Params, &p)
 		s.reply(m.ID, s.workspaceSymbols(p.Query))
 	case "textDocument/completion":
-		s.reply(m.ID, s.completions())
+		var p TextDocumentPositionParams
+		json.Unmarshal(m.Params, &p)
+		s.reply(m.ID, s.completions(p.TextDocument.URI, p.Position))
 	case "textDocument/hover", "textDocument/definition", "textDocument/references":
 		s.lookup(m)
 	case "shutdown":
@@ -169,30 +215,126 @@ func (s *Server) update(m rpcMessage) {
 		text = p.ContentChanges[len(p.ContentChanges)-1].Text
 	}
 	d := Parse(p.TextDocument.URI, text)
-	s.docs[d.URI] = d
+	s.indexReplace(d.URI, d)
 	s.notify("textDocument/publishDiagnostics", map[string]any{"uri": d.URI, "diagnostics": d.Diagnostics})
 }
-func (s *Server) workspaceSymbols(q string) []SymbolInformation {
-	var out []SymbolInformation
-	q = strings.ToLower(q)
-	for uri, d := range s.docs {
-		for _, x := range d.Symbols {
-			if q == "" || strings.Contains(strings.ToLower(x.Name), q) {
-				out = append(out, SymbolInformation{x.Name, x.Detail, x.Kind, Location{uri, x.Selection}})
+
+// closeDocument drops a closed document from the open set and the symbol
+// index, then re-queues the file for background indexing so workspace
+// features keep seeing it after the client closes the tab.
+func (s *Server) closeDocument(uri string) {
+	s.mu.Lock()
+	for _, key := range s.docNames[uri] {
+		refs := s.byName[key]
+		out := refs[:0]
+		for _, r := range refs {
+			if r.uri != uri {
+				out = append(out, r)
 			}
+		}
+		if len(out) == 0 {
+			delete(s.byName, key)
+		} else {
+			s.byName[key] = out
+		}
+	}
+	delete(s.docNames, uri)
+	delete(s.docs, uri)
+	s.mu.Unlock()
+	s.enqueue(uri)
+	s.spawnWorkers()
+}
+
+// workspaceSymbols answers a workspace/symbol query by walking the indexed
+// names (unique per document) instead of rescanning every document.
+func (s *Server) workspaceSymbols(q string) []SymbolInformation {
+	q = strings.ToLower(q)
+	s.mu.RLock()
+	names := make([]string, 0, len(s.byName))
+	for key := range s.byName {
+		names = append(names, key)
+	}
+	s.mu.RUnlock()
+	sort.Strings(names)
+	var out []SymbolInformation
+	for _, key := range names {
+		if q != "" && !strings.Contains(key, q) {
+			continue
+		}
+		for _, ref := range s.symbolRefs(key) {
+			out = append(out, SymbolInformation{ref.symbol.Name, ref.symbol.Detail, ref.symbol.Kind, Location{ref.uri, ref.symbol.Selection}})
 		}
 	}
 	return out
 }
-func (s *Server) completions() []CompletionItem {
+
+// completions limits the completion scope: symbols from the current document
+// first, then its used units, then the rest of the workspace. When the cursor
+// sits after a partial identifier the result is filtered by that prefix, and
+// the total is capped so huge workspaces do not flood the client.
+func (s *Server) completions(uri string, position Position) []CompletionItem {
+	const limit = 1000
+	prefix := ""
+	if d := s.document(uri); d != nil {
+		prefix = strings.ToLower(prefixAt(d.Text, position))
+	}
 	seen := map[string]bool{}
-	out := []CompletionItem{}
-	for _, d := range s.docs {
-		for _, x := range d.Symbols {
-			if !seen[x.Name] {
-				seen[x.Name] = true
-				out = append(out, CompletionItem{x.Name, x.Detail, x.Kind})
+	out := make([]CompletionItem, 0, 256)
+	add := func(name, detail string, kind int) {
+		if len(out) >= limit {
+			return
+		}
+		key := strings.ToLower(name)
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			return
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, CompletionItem{Label: name, Detail: detail, Kind: kind})
+	}
+	if d := s.document(uri); d != nil {
+		for i := range d.Symbols {
+			sym := &d.Symbols[i]
+			add(sym.Name, sym.Detail, sym.Kind)
+		}
+		for _, u := range d.Uses {
+			unitURI := s.unitURI(u.Name)
+			if unitURI == "" {
+				continue
 			}
+			s.ensureParsed(unitURI)
+			if du := s.document(unitURI); du != nil {
+				for i := range du.Symbols {
+					sym := &du.Symbols[i]
+					add(sym.Name, sym.Detail, sym.Kind)
+				}
+			}
+		}
+	}
+	s.mu.RLock()
+	names := make([]string, 0, len(s.byName))
+	for key := range s.byName {
+		names = append(names, key)
+	}
+	s.mu.RUnlock()
+	sort.Strings(names)
+	for _, key := range names {
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if seen[key] {
+			continue
+		}
+		refs := s.symbolRefs(key)
+		if len(refs) == 0 {
+			continue
+		}
+		seen[key] = true
+		out = append(out, CompletionItem{Label: refs[0].symbol.Name, Detail: refs[0].symbol.Detail, Kind: refs[0].symbol.Kind})
+		if len(out) >= limit {
+			break
 		}
 	}
 	return out
@@ -200,7 +342,7 @@ func (s *Server) completions() []CompletionItem {
 func (s *Server) lookup(m rpcMessage) {
 	var p TextDocumentPositionParams
 	json.Unmarshal(m.Params, &p)
-	d := s.docs[p.TextDocument.URI]
+	d := s.document(p.TextDocument.URI)
 	if d == nil {
 		s.reply(m.ID, nil)
 		return
@@ -235,6 +377,10 @@ func (s *Server) lookup(m rpcMessage) {
 	}
 	s.reply(m.ID, hits)
 }
+
+// indexRoots walks every workspace root, queues the source files for the
+// background indexer and returns immediately. The walk itself reads no file
+// contents, so startup stays fast even for large trees.
 func (s *Server) indexRoots() {
 	for uri := range s.roots {
 		path := uriPath(uri)
@@ -249,15 +395,186 @@ func (s *Server) indexRoots() {
 			if ext != ".pas" && ext != ".dpr" && ext != ".dpk" {
 				return nil
 			}
-			b, er := os.ReadFile(p)
-			if er == nil {
-				u := "file:///" + filepath.ToSlash(p)
-				s.docs[u] = Parse(u, string(b))
-			}
+			s.enqueue("file:///" + filepath.ToSlash(p))
 			return nil
 		})
 	}
+	s.spawnWorkers()
 }
+
+func (s *Server) enqueue(uri string) {
+	s.mu.Lock()
+	if !s.pendingSet[uri] {
+		s.pendingSet[uri] = true
+		s.pendingQueue = append(s.pendingQueue, uri)
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) spawnWorkers() {
+	s.mu.Lock()
+	if s.active >= maxIndexWorkers || len(s.pendingQueue) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	want := maxIndexWorkers - s.active
+	s.active += want
+	s.mu.Unlock()
+	for i := 0; i < want; i++ {
+		go s.indexWorker()
+	}
+}
+
+func (s *Server) indexWorker() {
+	defer func() {
+		s.mu.Lock()
+		s.active--
+		s.mu.Unlock()
+	}()
+	for {
+		s.mu.Lock()
+		if len(s.pendingQueue) == 0 {
+			s.mu.Unlock()
+			return
+		}
+		uri := s.pendingQueue[0]
+		s.mu.Unlock()
+		s.indexFile(uri)
+		s.mu.Lock()
+		if len(s.pendingQueue) > 0 && s.pendingQueue[0] == uri {
+			s.pendingQueue = s.pendingQueue[1:]
+		}
+		delete(s.pendingSet, uri)
+		s.mu.Unlock()
+	}
+}
+
+// indexFile parses one file (once, from disk) and publishes its unit name and
+// symbols to the index.
+func (s *Server) indexFile(uri string) {
+	path := uriPath(uri)
+	if path == "" {
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	text := string(b)
+	s.noteUnit(uri, text)
+	s.indexDoc(Parse(uri, text))
+}
+
+// noteUnit publishes the unit declared at the top of a file without a full
+// parse, so uses-clause navigation resolves early.
+func (s *Server) noteUnit(uri, text string) {
+	name := unitNameOf(text)
+	if name == "" {
+		return
+	}
+	s.mu.Lock()
+	s.units[strings.ToLower(name)] = uri
+	s.mu.Unlock()
+}
+
+// indexDoc inserts a parsed document into the index unless a newer copy (an
+// open/edited document) already exists.
+func (s *Server) indexDoc(doc *Document) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.docs[doc.URI]; ok {
+		return
+	}
+	s.insertIndexed(doc)
+}
+
+// insertIndexed publishes a document and its symbols. Callers must hold mu.
+func (s *Server) insertIndexed(doc *Document) {
+	s.docs[doc.URI] = doc
+	names := s.docNames[doc.URI]
+	for i := range doc.Symbols {
+		sym := doc.Symbols[i]
+		key := strings.ToLower(sym.Name)
+		s.byName[key] = append(s.byName[key], symbolRef{uri: doc.URI, symbol: sym})
+		names = append(names, key)
+	}
+	s.docNames[doc.URI] = names
+}
+
+// indexReplace swaps the indexed entries for a document after an edit.
+func (s *Server) indexReplace(uri string, doc *Document) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range s.docNames[uri] {
+		refs := s.byName[key]
+		out := refs[:0]
+		for _, r := range refs {
+			if r.uri != uri {
+				out = append(out, r)
+			}
+		}
+		if len(out) == 0 {
+			delete(s.byName, key)
+		} else {
+			s.byName[key] = out
+		}
+	}
+	delete(s.docNames, uri)
+	delete(s.pendingSet, uri)
+	s.docs[uri] = doc
+	s.insertIndexed(doc)
+}
+
+// ensureParsed lazily parses a queued file on demand so a request that needs
+// it never waits for the background pass to reach it.
+func (s *Server) ensureParsed(uri string) {
+	s.mu.RLock()
+	_, done := s.docs[uri]
+	queued := s.pendingSet[uri]
+	s.mu.RUnlock()
+	if done || !queued {
+		return
+	}
+	s.indexFile(uri)
+}
+
+func (s *Server) document(uri string) *Document {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.docs[uri]
+}
+
+func (s *Server) unitURI(name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.units[strings.ToLower(name)]
+}
+
+// symbolRefs returns all indexed occurrences of a symbol name. The slice is
+// copied so a concurrent background insert can never invalidate it.
+func (s *Server) symbolRefs(name string) []symbolRef {
+	key := strings.ToLower(name)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.byName) > 0 {
+		refs := s.byName[key]
+		out := make([]symbolRef, len(refs))
+		copy(out, refs)
+		return out
+	}
+	// Fallback for servers constructed directly (tests) or before the first
+	// background insert: scan the open documents.
+	var out []symbolRef
+	for _, d := range s.docs {
+		for _, sym := range d.Symbols {
+			if strings.EqualFold(sym.Name, name) {
+				out = append(out, symbolRef{uri: d.URI, symbol: sym})
+			}
+		}
+	}
+	return out
+}
+
 func uriPath(raw string) string {
 	u, e := url.Parse(raw)
 	if e != nil || u.Scheme != "file" {
