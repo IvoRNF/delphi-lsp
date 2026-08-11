@@ -106,6 +106,7 @@ func Parse(uri, text string) *Document {
 			continue
 		}
 		if strings.EqualFold(trimmed, "implementation") {
+			closeRoutine(lineNumber - 1)
 			inImplementation, inUses, inTypeSection, inVarSection = true, false, false, false
 			continue
 		}
@@ -127,6 +128,11 @@ func Parse(uri, text string) *Document {
 
 		if strings.EqualFold(trimmed, "type") {
 			inTypeSection = true
+			continue
+		}
+		if currentRoutine < 0 && currentType == "" && strings.EqualFold(trimmed, "var") {
+			inVarSection = true
+			inTypeSection = false
 			continue
 		}
 		if currentRoutine < 0 && currentType == "" && inTypeSection {
