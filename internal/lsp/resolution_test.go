@@ -48,3 +48,30 @@ end.
 		t.Fatalf("implementation global definition = %#v", implementationValue)
 	}
 }
+func TestDefinitionResolvesImplementationRoutineParameters(t *testing.T) {
+	document := Parse("file:///parameters.pas", `
+unit Parameters;
+interface
+procedure Declared(Value: Integer);
+implementation
+procedure Declared(Value: Integer);
+begin
+  Value := Value + 1;
+end;
+procedure ImplementationOnly(Value: Integer);
+begin
+  Value := Value + 1;
+end;
+end.
+`)
+	server := &Server{docs: map[string]*Document{document.URI: document}}
+
+	declared := server.definitionLocations(document, Position{Line: 7, Character: 3}, "Value")
+	if len(declared) != 1 || declared[0].Range.Start.Line != 5 {
+		t.Fatalf("declared implementation parameter definition = %#v", declared)
+	}
+	implementationOnly := server.definitionLocations(document, Position{Line: 11, Character: 3}, "Value")
+	if len(implementationOnly) != 1 || implementationOnly[0].Range.Start.Line != 9 {
+		t.Fatalf("implementation-only parameter definition = %#v", implementationOnly)
+	}
+}

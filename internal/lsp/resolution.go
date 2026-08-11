@@ -17,14 +17,25 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 	}
 	routine := routineAt(current, position)
 	if routine != nil {
+		// Parameters belong to the active routine header. This keeps an
+		// interface declaration's parameters out of an implementation lookup.
+		var parameters []Location
 		var locals []Location
 		for _, symbol := range current.Symbols {
 			if strings.EqualFold(symbol.Name, name) && strings.EqualFold(symbol.Owner, routine.Name) {
-				locals = append(locals, Location{URI: current.URI, Range: symbol.Selection})
+				location := Location{URI: current.URI, Range: symbol.Selection}
+				if symbol.Selection.Start.Line == routine.Selection.Start.Line {
+					parameters = append(parameters, location)
+				} else if symbol.Selection.Start.Line >= routine.Scope.Start.Line && symbol.Selection.Start.Line <= routine.Scope.End.Line {
+					locals = append(locals, location)
+				}
 			}
 		}
 		if len(locals) > 0 {
-			return locals
+			return uniqueLocations(locals)
+		}
+		if len(parameters) > 0 {
+			return uniqueLocations(parameters)
 		}
 	}
 	owner := memberOwnerAt(current, position, routine)
