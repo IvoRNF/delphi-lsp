@@ -2,6 +2,7 @@
     "project": "Z:/modules_custom/millenium!nielsenbookscan/services-dll/millenium_nielsenbookscan.dproj",
     "delphiDir": "C:/Program Files (x86)/CodeGear/RAD Studio/5.0",
     "searchPaths": [
+      "C:/Users/AQUASOFT/Documents/projects/delphi 2007/LoggingTool",
       "z:/Indy10/Lib/Protocols",
       "z:/Indy10/Lib/Core",
       "z:/Indy10/Lib/System",
