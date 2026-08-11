@@ -23,6 +23,7 @@ type Symbol struct {
 	Detail         string
 	Documentation  string
 	Owner          string
+	Parents        []string
 	Kind           int
 	Range          Range
 	Selection      Range
@@ -45,7 +46,7 @@ type UnitReference struct {
 
 var declaration = regexp.MustCompile(`(?i)^\s*(procedure|function|constructor|destructor|type|var|const|property)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(.*)$`)
 var typedVariable = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:\s*([^;]+);`)
-var typeDefinition = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(class|record|interface|dispinterface|object)\b`)
+var typeDefinition = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(class|record|interface|dispinterface|object)\b\s*(?:\(([^)]*)\))?`)
 var typeAlias = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+);`)
 var unitHeader = regexp.MustCompile(`(?i)^\s*unit\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;`)
 var usesStart = regexp.MustCompile(`(?i)^\s*uses\b(.*)$`)
@@ -142,7 +143,7 @@ func Parse(uri, text string) *Document {
 			if match := typeDefinition.FindStringSubmatch(line); match != nil {
 				start := strings.Index(strings.ToLower(line), strings.ToLower(match[1]))
 				selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(match[1])}}
-				document.Symbols = append(document.Symbols, Symbol{Name: match[1], Detail: match[1] + " = " + strings.ToLower(match[2]), Documentation: summaryBefore(lines, lineNumber), Kind: symbolClass, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}})
+				document.Symbols = append(document.Symbols, Symbol{Name: match[1], Detail: match[1] + " = " + strings.ToLower(match[2]), Documentation: summaryBefore(lines, lineNumber), Kind: symbolClass, Parents: typeParents(match[3]), Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}})
 				currentType, currentTypeIndex, inVarSection = match[1], len(document.Symbols)-1, false
 				continue
 			}
@@ -259,6 +260,16 @@ func Parse(uri, text string) *Document {
 	return document
 }
 
+func typeParents(raw string) []string {
+	var parents []string
+	for _, name := range strings.Split(raw, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			parents = append(parents, name)
+		}
+	}
+	return parents
+}
 func addUses(document *Document, text string, lineNumber, offset int) {
 	cursor := 0
 	for _, part := range strings.Split(text, ",") {

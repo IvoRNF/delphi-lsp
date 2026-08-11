@@ -300,7 +300,7 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 	if d := s.document(uri); d != nil {
 		for i := range d.Symbols {
 			sym := &d.Symbols[i]
-			add(sym.Name, sym.Detail, sym.Kind)
+			add(sym.Name, sym.Detail, completionKind(*sym))
 		}
 		for _, u := range d.Uses {
 			unitURI := s.unitURI(u.Name)
@@ -311,7 +311,7 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 			if du := s.document(unitURI); du != nil {
 				for i := range du.Symbols {
 					sym := &du.Symbols[i]
-					add(sym.Name, sym.Detail, sym.Kind)
+					add(sym.Name, sym.Detail, completionKind(*sym))
 				}
 			}
 		}
@@ -335,7 +335,7 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 			continue
 		}
 		seen[key] = true
-		out = append(out, CompletionItem{Label: refs[0].symbol.Name, Detail: refs[0].symbol.Detail, Kind: refs[0].symbol.Kind})
+		out = append(out, CompletionItem{Label: refs[0].symbol.Name, Detail: refs[0].symbol.Detail, Kind: completionKind(refs[0].symbol)})
 		if len(out) >= limit {
 			break
 		}
@@ -367,25 +367,65 @@ func (s *Server) memberCompletionType(document *Document, position Position) str
 }
 
 func (s *Server) memberCompletions(typeName, prefix string) []CompletionItem {
-	seen := map[string]bool{}
+	seenTypes := map[string]bool{}
+	seenMembers := map[string]bool{}
 	var out []CompletionItem
-	for _, typeRef := range s.symbolRefs(typeName) {
-		document := s.document(typeRef.uri)
-		if document == nil {
-			continue
+	var addType func(string)
+	addType = func(name string) {
+		key := strings.ToLower(name)
+		if key == "" || seenTypes[key] {
+			return
 		}
-		for _, symbol := range document.Symbols {
-			if !strings.EqualFold(symbol.Owner, typeName) || (prefix != "" && !strings.HasPrefix(strings.ToLower(symbol.Name), prefix)) {
+		seenTypes[key] = true
+		for _, typeRef := range s.symbolRefs(name) {
+			document := s.document(typeRef.uri)
+			if document == nil {
 				continue
 			}
-			key := strings.ToLower(symbol.Name)
-			if !seen[key] {
-				seen[key] = true
-				out = append(out, CompletionItem{Label: symbol.Name, Detail: symbol.Detail, Kind: symbol.Kind})
+			for _, symbol := range document.Symbols {
+				if symbol.Kind == symbolClass && strings.EqualFold(symbol.Name, name) {
+					for _, parent := range symbol.Parents {
+						addType(parent)
+					}
+				}
+				if !strings.EqualFold(symbol.Owner, name) || (prefix != "" && !strings.HasPrefix(strings.ToLower(symbol.Name), prefix)) {
+					continue
+				}
+				memberKey := strings.ToLower(symbol.Name)
+				if !seenMembers[memberKey] {
+					seenMembers[memberKey] = true
+					out = append(out, CompletionItem{Label: symbol.Name, Detail: symbol.Detail, Kind: completionKind(symbol)})
+				}
 			}
 		}
 	}
+	addType(typeName)
 	return out
+}
+
+// completionKind uses LSP CompletionItemKind values, which differ from the
+// SymbolKind values used by document/workspace symbol requests.
+func completionKind(symbol Symbol) int {
+	switch symbol.Kind {
+	case symbolMethod:
+		return 2 // Method
+	case symbolFunction:
+		return 3 // Function
+	case symbolField:
+		return 5 // Field (a member variable)
+	case symbolVariable:
+		return 6 // Variable
+	case symbolClass:
+		return 7 // Class / interface
+	case symbolModule:
+		return 9 // Module
+	case symbolProperty:
+		return 10 // Property
+	case symbolConstant:
+		return 21 // Constant
+	default:
+		return 1 // Text
+	}
 }
 func (s *Server) lookup(m rpcMessage) {
 	var p TextDocumentPositionParams

@@ -114,3 +114,56 @@ end.
 		t.Fatalf("used-unit interface completion = %#v", items)
 	}
 }
+func TestInheritedInterfaceAndClassMembersHaveCompletionKinds(t *testing.T) {
+	document := Parse("file:///hierarchy.pas", `
+unit Hierarchy;
+interface
+type
+  IBase = interface
+    procedure BaseMethod;
+  end;
+  IChild = interface(IBase)
+    function ChildMethod: Integer;
+  end;
+  TBase = class
+    BaseValue: Integer;
+    procedure BaseClassMethod;
+  end;
+  TChild = class(TBase)
+    ChildValue: Integer;
+    function ChildClassMethod: Integer;
+  end;
+var
+  InterfaceValue: IChild;
+  ClassValue: TChild;
+implementation
+procedure Use;
+begin
+  InterfaceValue.
+  ClassValue.
+end;
+end.
+`)
+	server := NewServer(nil, nil)
+	server.indexReplace(document.URI, document)
+
+	interfaceItems := completionKinds(server.completions(document.URI, Position{Line: 24, Character: len("  InterfaceValue.")}))
+	if interfaceItems["BaseMethod"] != 2 || interfaceItems["ChildMethod"] != 2 {
+		t.Fatalf("inherited interface methods = %#v", interfaceItems)
+	}
+	classItems := completionKinds(server.completions(document.URI, Position{Line: 25, Character: len("  ClassValue.")}))
+	if classItems["BaseClassMethod"] != 2 || classItems["ChildClassMethod"] != 2 {
+		t.Fatalf("class methods = %#v", classItems)
+	}
+	if classItems["BaseValue"] != 5 || classItems["ChildValue"] != 5 {
+		t.Fatalf("class member variables = %#v", classItems)
+	}
+}
+
+func completionKinds(items []CompletionItem) map[string]int {
+	kinds := map[string]int{}
+	for _, item := range items {
+		kinds[item.Label] = item.Kind
+	}
+	return kinds
+}
