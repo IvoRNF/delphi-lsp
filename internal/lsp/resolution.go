@@ -39,6 +39,9 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 			return members
 		}
 	}
+	if local := localDefinitionLocations(current, name); len(local) > 0 {
+		return local
+	}
 	var matches []Location
 	for _, ref := range s.symbolRefs(name) {
 		if ref.symbol.Owner == "" {
@@ -48,6 +51,75 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 	return uniqueLocations(matches)
 }
 
+// localDefinitionLocations keeps a same-named declaration in the current
+// unit ahead of identically named workspace symbols. For routines, the
+// implementation is the useful navigation target.
+func localDefinitionLocations(document *Document, name string) []Location {
+	var implementations, declarations []Location
+	for _, symbol := range document.Symbols {
+		if symbol.Owner != "" || !strings.EqualFold(symbol.Name, name) {
+			continue
+		}
+		location := Location{URI: document.URI, Range: symbol.Selection}
+		if isRoutineSymbol(symbol) && symbol.Implementation {
+			implementations = append(implementations, location)
+		} else {
+			declarations = append(declarations, location)
+		}
+	}
+	if len(implementations) > 0 {
+		return uniqueLocations(implementations)
+	}
+	return uniqueLocations(declarations)
+}
+
+func receiverAt(text string, position Position) string {
+	lines := strings.Split(text, "\n")
+	if position.Line < 0 || position.Line >= len(lines) {
+		return ""
+	}
+	line := lines[position.Line]
+	character := position.Character
+	if character > len(line) {
+		character = len(line)
+	}
+	for character > 0 && isWordChar(line[character-1]) {
+		character--
+	}
+	if character == 0 || line[character-1] != '.' {
+		return ""
+	}
+	end := character - 1
+	start := end
+	for start > 0 && isWordChar(line[start-1]) {
+		start--
+	}
+	return line[start:end]
+}
+
+func declaredTypeOf(document *Document, name string, routine *Symbol) string {
+	owners := []string{""}
+	if routine != nil {
+		owners = []string{routine.Name, routine.Owner, ""}
+	}
+	for _, owner := range owners {
+		for _, symbol := range document.Symbols {
+			if !strings.EqualFold(symbol.Name, name) || !strings.EqualFold(symbol.Owner, owner) {
+				continue
+			}
+			if symbol.Kind == symbolClass {
+				return symbol.Name
+			}
+			if colon := strings.Index(symbol.Detail, ":"); colon >= 0 {
+				parts := strings.Fields(strings.TrimSpace(symbol.Detail[colon+1:]))
+				if len(parts) > 0 {
+					return parts[0]
+				}
+			}
+		}
+	}
+	return ""
+}
 func routineAt(document *Document, position Position) *Symbol {
 	for index := range document.Symbols {
 		symbol := &document.Symbols[index]

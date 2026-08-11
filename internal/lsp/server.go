@@ -277,6 +277,9 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 	prefix := ""
 	if d := s.document(uri); d != nil {
 		prefix = strings.ToLower(prefixAt(d.Text, position))
+		if typeName := s.memberCompletionType(d, position); typeName != "" {
+			return s.memberCompletions(typeName, prefix)
+		}
 	}
 	seen := map[string]bool{}
 	out := make([]CompletionItem, 0, 256)
@@ -335,6 +338,51 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 		out = append(out, CompletionItem{Label: refs[0].symbol.Name, Detail: refs[0].symbol.Detail, Kind: refs[0].symbol.Kind})
 		if len(out) >= limit {
 			break
+		}
+	}
+	return out
+}
+
+// memberCompletionType resolves the identifier immediately before a dot to
+// its declared type. A non-empty result makes completion member-only instead
+// of mixing in unrelated workspace symbols.
+func (s *Server) memberCompletionType(document *Document, position Position) string {
+	receiver := receiverAt(document.Text, position)
+	if receiver == "" {
+		return ""
+	}
+	routine := routineAt(document, position)
+	if strings.EqualFold(receiver, "self") && routine != nil {
+		return routine.Owner
+	}
+	if typeName := declaredTypeOf(document, receiver, routine); typeName != "" {
+		return typeName
+	}
+	for _, ref := range s.symbolRefs(receiver) {
+		if ref.symbol.Kind == symbolClass {
+			return ref.symbol.Name
+		}
+	}
+	return ""
+}
+
+func (s *Server) memberCompletions(typeName, prefix string) []CompletionItem {
+	seen := map[string]bool{}
+	var out []CompletionItem
+	for _, typeRef := range s.symbolRefs(typeName) {
+		document := s.document(typeRef.uri)
+		if document == nil {
+			continue
+		}
+		for _, symbol := range document.Symbols {
+			if !strings.EqualFold(symbol.Owner, typeName) || (prefix != "" && !strings.HasPrefix(strings.ToLower(symbol.Name), prefix)) {
+				continue
+			}
+			key := strings.ToLower(symbol.Name)
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, CompletionItem{Label: symbol.Name, Detail: symbol.Detail, Kind: symbol.Kind})
+			}
 		}
 	}
 	return out
