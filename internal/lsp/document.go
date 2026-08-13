@@ -45,7 +45,10 @@ type UnitReference struct {
 }
 
 var declaration = regexp.MustCompile(`(?i)^\s*(procedure|function|constructor|destructor|type|var|const|property)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(.*)$`)
-var typedVariable = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:\s*([^;]+);`)
+
+// Delphi permits the last field in a record (and the last declaration in a
+// var block) to omit its trailing semicolon.
+var typedVariable = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:\s*([^;]+?)(?:\s*;|\s*$)`)
 var typeDefinition = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(class|record|interface|dispinterface|object)\b\s*(?:\(([^)]*)\))?`)
 var typeAlias = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+);`)
 var unitHeader = regexp.MustCompile(`(?i)^\s*unit\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;`)
@@ -162,6 +165,19 @@ func Parse(uri, text string) *Document {
 		}
 		if match := declaration.FindStringSubmatch(line); match != nil {
 			word, rawName := strings.ToLower(match[1]), match[2]
+			if word == "var" && strings.Contains(match[3], ":") {
+				owner := ""
+				if currentRoutine >= 0 {
+					owner = document.Symbols[currentRoutine].Name
+				} else if currentType != "" {
+					owner = currentType
+				}
+				// Recombine the first identifier captured by declaration with the
+				// remainder so addTypedVariables indexes every comma-separated name.
+				addTypedVariables(document, rawName+match[3], lineNumber, owner, inImplementation && owner == "")
+				inVarSection = true
+				continue
+			}
 			name := rawName
 			if dot := strings.LastIndex(name, "."); dot >= 0 {
 				name = name[dot+1:]
@@ -212,6 +228,9 @@ func Parse(uri, text string) *Document {
 			if isRoutine {
 				currentRoutine = len(document.Symbols) - 1
 				addParameters(document, line, lineNumber, name)
+				if word == "function" {
+					addFunctionResult(document, match[3], lineNumber, selection, name)
+				}
 				inVarSection = false
 			} else if word == "var" {
 				inVarSection = true
@@ -329,6 +348,31 @@ func addParameters(document *Document, line string, lineNumber int, owner string
 			document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: strings.TrimSpace(group), Owner: owner, Kind: symbolVariable, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(line)}}, Selection: selection})
 		}
 	}
+}
+
+// addFunctionResult models Delphi's implicit Result variable. It belongs to
+// the function's local scope even though it has no written declaration.
+func addFunctionResult(document *Document, suffix string, lineNumber int, selection Range, owner string) {
+	returnType := ""
+	if close := strings.LastIndex(suffix, ")"); close >= 0 {
+		suffix = suffix[close+1:]
+	}
+	if colon := strings.Index(suffix, ":"); colon >= 0 {
+		returnType = strings.TrimSpace(suffix[colon+1:])
+		returnType = strings.TrimSpace(strings.TrimSuffix(returnType, ";"))
+	}
+	detail := "Result"
+	if returnType != "" {
+		detail += ": " + returnType
+	}
+	document.Symbols = append(document.Symbols, Symbol{
+		Name:      "Result",
+		Detail:    detail,
+		Owner:     owner,
+		Kind:      symbolVariable,
+		Range:     Range{Start: selection.Start, End: selection.End},
+		Selection: selection,
+	})
 }
 
 func wordAt(text string, position Position) string {

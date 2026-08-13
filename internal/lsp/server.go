@@ -305,8 +305,12 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 		out = append(out, CompletionItem{Label: name, Detail: detail, Kind: kind})
 	}
 	if d := current; d != nil {
+		routine := routineAt(d, position)
 		for i := range d.Symbols {
 			sym := &d.Symbols[i]
+			if sym.Owner != "" && (routine == nil || !strings.EqualFold(sym.Owner, routine.Name)) {
+				continue
+			}
 			add(sym.Name, sym.Detail, completionKind(*sym))
 		}
 		for _, u := range d.Uses {
@@ -318,7 +322,7 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 			if du := s.document(unitURI); du != nil {
 				for i := range du.Symbols {
 					sym := &du.Symbols[i]
-					if sym.Implementation {
+					if sym.Implementation || sym.Owner != "" {
 						continue
 					}
 					add(sym.Name, sym.Detail, completionKind(*sym))
