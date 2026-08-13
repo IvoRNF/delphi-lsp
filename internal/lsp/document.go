@@ -419,6 +419,54 @@ func prefixAt(text string, position Position) string {
 	return line[start:position.Character]
 }
 
+// unitPrefixAt is prefixAt for a Delphi unit name, which may be scoped with
+// dots (for example, Company.Data.Sql).
+func unitPrefixAt(text string, position Position) string {
+	lines := strings.Split(text, "\n")
+	if position.Line < 0 || position.Line >= len(lines) {
+		return ""
+	}
+	line := lines[position.Line]
+	if position.Character > len(line) {
+		position.Character = len(line)
+	}
+	start := position.Character
+	for start > 0 && (isWordChar(line[start-1]) || line[start-1] == '.') {
+		start--
+	}
+	return line[start:position.Character]
+}
+
+// usesClauseAt reports whether position is inside a uses declaration. It
+// deliberately follows the parser's line-oriented treatment of uses clauses,
+// including multi-line declarations.
+func usesClauseAt(text string, position Position) bool {
+	lines := strings.Split(text, "\n")
+	if position.Line < 0 || position.Line >= len(lines) {
+		return false
+	}
+	inUses := false
+	for lineNumber, line := range lines[:position.Line+1] {
+		if !inUses {
+			if usesStart.FindStringSubmatch(line) == nil {
+				continue
+			}
+			inUses = true
+		}
+		end := len(line)
+		if lineNumber == position.Line && position.Character < end {
+			end = position.Character
+		}
+		if strings.Contains(line[:end], ";") {
+			return false
+		}
+		if lineNumber == position.Line {
+			return true
+		}
+	}
+	return false
+}
+
 // unitNameOf extracts the unit name from the top of a file without a full
 // parse, stopping early so the background indexer can map unit names cheaply.
 func unitNameOf(text string) string {

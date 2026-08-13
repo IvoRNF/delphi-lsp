@@ -49,7 +49,8 @@ type Server struct {
 	// units maps a lowercased unit name to the URI that declares it. It is
 	// filled by the background indexer and lets uses-clause navigation
 	// resolve without a full parse of the target file.
-	units map[string]string
+	units     map[string]string
+	unitNames map[string]string
 	// pendingQueue/pendingSet hold files awaiting background indexing.
 	// Lazy loading: files are queued during the workspace walk and parsed in
 	// the background; a request that needs an unparsed file parses it on
@@ -68,6 +69,7 @@ func NewServer(in io.Reader, out io.Writer) *Server {
 		byName:     map[string][]symbolRef{},
 		docNames:   map[string][]string{},
 		units:      map[string]string{},
+		unitNames:  map[string]string{},
 		pendingSet: map[string]bool{},
 	}
 	if config := os.Getenv("DELPHI_LSP_CONFIG"); config != "" {
@@ -280,6 +282,9 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 	prefix := ""
 	current := s.document(uri)
 	if current != nil {
+		if usesClauseAt(current.Text, position) {
+			return s.unitCompletions(unitPrefixAt(current.Text, position))
+		}
 		prefix = strings.ToLower(prefixAt(current.Text, position))
 		if typeName := s.memberCompletionType(current, position); typeName != "" {
 			return s.memberCompletions(typeName, prefix)
@@ -353,6 +358,49 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 		if len(out) >= limit {
 			break
 		}
+	}
+	return out
+}
+
+// unitCompletions lists only units known to the workspace. Unit declarations
+// are published before their files are fully parsed, so this remains useful
+// while the background indexer is still running.
+func (s *Server) unitCompletions(prefix string) []CompletionItem {
+	const limit = 1000
+	prefix = strings.ToLower(prefix)
+
+	s.mu.RLock()
+	names := make(map[string]string, len(s.units)+len(s.docs))
+	for key := range s.units {
+		name := s.unitNames[key]
+		if name == "" {
+			name = key
+		}
+		names[key] = name
+	}
+	for _, document := range s.docs {
+		for _, symbol := range document.Symbols {
+			if symbol.Kind == symbolModule {
+				names[strings.ToLower(symbol.Name)] = symbol.Name
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	keys := make([]string, 0, len(names))
+	for key := range names {
+		if prefix == "" || strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+	out := make([]CompletionItem, 0, len(keys))
+	for _, key := range keys {
+		name := names[key]
+		out = append(out, CompletionItem{Label: name, Detail: "unit " + name, Kind: 9}) // Module
 	}
 	return out
 }
@@ -645,7 +693,9 @@ func (s *Server) noteUnit(uri, text string) {
 		return
 	}
 	s.mu.Lock()
-	s.units[strings.ToLower(name)] = uri
+	key := strings.ToLower(name)
+	s.units[key] = uri
+	s.unitNames[key] = name
 	s.mu.Unlock()
 }
 
