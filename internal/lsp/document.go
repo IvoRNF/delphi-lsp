@@ -197,7 +197,11 @@ func Parse(uri, text string) *Document {
 			}
 			nameStart := start + strings.LastIndex(rawName, ".") + 1
 			selection := Range{Start: Position{Line: lineNumber, Character: nameStart}, End: Position{Line: lineNumber, Character: nameStart + len(name)}}
-			symbol := Symbol{Name: name, Detail: strings.TrimSpace(match[1] + " " + rawName + match[3]), Documentation: summaryBefore(lines, lineNumber), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}, Implementation: inImplementation && kind == symbolFunction}
+			// Declarations in a unit implementation section are unit-private.
+			// Members already carry an owner and are not included in ordinary
+			// cross-unit name lookup, but standalone routines must be marked too.
+			implementationOnly := inImplementation && (kind == symbolFunction || (kind == symbolVariable && owner == ""))
+			symbol := Symbol{Name: name, Detail: strings.TrimSpace(match[1] + " " + rawName + match[3]), Documentation: summaryBefore(lines, lineNumber), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}, Implementation: implementationOnly}
 			document.Symbols = append(document.Symbols, symbol)
 			if word == "type" && (strings.Contains(strings.ToLower(match[3]), "= class") || strings.Contains(strings.ToLower(match[3]), "= record")) {
 				closeType(lineNumber - 1)
@@ -220,7 +224,7 @@ func Parse(uri, text string) *Document {
 				inVarSection = true
 				continue
 			}
-			if inVarSection && addTypedVariables(document, line, lineNumber, document.Symbols[currentRoutine].Name) {
+			if inVarSection && addTypedVariables(document, line, lineNumber, document.Symbols[currentRoutine].Name, false) {
 				continue
 			}
 			lower := strings.ToLower(trimmed)
@@ -236,11 +240,11 @@ func Parse(uri, text string) *Document {
 				}
 			}
 		} else if currentType != "" {
-			if addTypedVariables(document, line, lineNumber, currentType) {
+			if addTypedVariables(document, line, lineNumber, currentType, false) {
 				continue
 			}
 		} else if inVarSection {
-			if addTypedVariables(document, line, lineNumber, "") {
+			if addTypedVariables(document, line, lineNumber, "", inImplementation) {
 				continue
 			}
 			if trimmed != "" && !strings.HasPrefix(trimmed, "//") {
@@ -286,7 +290,7 @@ func addUses(document *Document, text string, lineNumber, offset int) {
 	}
 }
 
-func addTypedVariables(document *Document, line string, lineNumber int, owner string) bool {
+func addTypedVariables(document *Document, line string, lineNumber int, owner string, implementationOnly bool) bool {
 	match := typedVariable.FindStringSubmatch(line)
 	if match == nil {
 		return false
@@ -299,7 +303,7 @@ func addTypedVariables(document *Document, line string, lineNumber int, owner st
 		name = strings.TrimSpace(name)
 		start := strings.Index(strings.ToLower(line), strings.ToLower(name))
 		selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(name)}}
-		document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: name + ": " + strings.TrimSpace(match[2]), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(line)}}, Selection: selection})
+		document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: name + ": " + strings.TrimSpace(match[2]), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(line)}}, Selection: selection, Implementation: implementationOnly && owner == ""})
 	}
 	return true
 }

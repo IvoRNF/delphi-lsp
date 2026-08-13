@@ -262,6 +262,9 @@ func (s *Server) workspaceSymbols(q string) []SymbolInformation {
 			continue
 		}
 		for _, ref := range s.symbolRefs(key) {
+			if ref.symbol.Implementation {
+				continue
+			}
 			out = append(out, SymbolInformation{ref.symbol.Name, ref.symbol.Detail, ref.symbol.Kind, Location{ref.uri, ref.symbol.Selection}})
 		}
 	}
@@ -275,10 +278,14 @@ func (s *Server) workspaceSymbols(q string) []SymbolInformation {
 func (s *Server) completions(uri string, position Position) []CompletionItem {
 	const limit = 1000
 	prefix := ""
-	if d := s.document(uri); d != nil {
-		prefix = strings.ToLower(prefixAt(d.Text, position))
-		if typeName := s.memberCompletionType(d, position); typeName != "" {
+	current := s.document(uri)
+	if current != nil {
+		prefix = strings.ToLower(prefixAt(current.Text, position))
+		if typeName := s.memberCompletionType(current, position); typeName != "" {
 			return s.memberCompletions(typeName, prefix)
+		}
+		if moduleURI := s.moduleCompletionURI(current, position); moduleURI != "" {
+			return s.moduleCompletions(moduleURI, prefix)
 		}
 	}
 	seen := map[string]bool{}
@@ -297,7 +304,7 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 		seen[key] = true
 		out = append(out, CompletionItem{Label: name, Detail: detail, Kind: kind})
 	}
-	if d := s.document(uri); d != nil {
+	if d := current; d != nil {
 		for i := range d.Symbols {
 			sym := &d.Symbols[i]
 			add(sym.Name, sym.Detail, completionKind(*sym))
@@ -311,6 +318,9 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 			if du := s.document(unitURI); du != nil {
 				for i := range du.Symbols {
 					sym := &du.Symbols[i]
+					if sym.Implementation {
+						continue
+					}
 					add(sym.Name, sym.Detail, completionKind(*sym))
 				}
 			}
@@ -330,7 +340,7 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 		if seen[key] {
 			continue
 		}
-		refs := s.symbolRefs(key)
+		refs := s.visibleSymbolRefs(current, key)
 		if len(refs) == 0 {
 			continue
 		}
@@ -339,6 +349,70 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 		if len(out) >= limit {
 			break
 		}
+	}
+	return out
+}
+
+// moduleCompletionURI returns the unit selected by a qualified expression
+// such as `Math.`. Type-member completion takes precedence when a local
+// variable has the same spelling as its unit.
+func (s *Server) moduleCompletionURI(document *Document, position Position) string {
+	name := qualifiedReceiverAt(document.Text, position)
+	if name == "" {
+		return ""
+	}
+	if location := s.unitLocation(name); location != nil {
+		return location.URI
+	}
+	return ""
+}
+
+// qualifiedReceiverAt is like receiverAt but preserves dots in a unit name,
+// allowing scoped units such as Company.Tools.Text.`
+func qualifiedReceiverAt(text string, position Position) string {
+	lines := strings.Split(text, "\n")
+	if position.Line < 0 || position.Line >= len(lines) {
+		return ""
+	}
+	line := lines[position.Line]
+	character := position.Character
+	if character > len(line) {
+		character = len(line)
+	}
+	for character > 0 && isWordChar(line[character-1]) {
+		character--
+	}
+	if character == 0 || line[character-1] != '.' {
+		return ""
+	}
+	end := character - 1
+	start := end
+	for start > 0 && (isWordChar(line[start-1]) || line[start-1] == '.') {
+		start--
+	}
+	return strings.Trim(line[start:end], ".")
+}
+
+// moduleCompletions lists a unit's public, top-level declarations only. Class
+// members require a class receiver; locals and implementation declarations
+// are not visible through a unit namespace.
+func (s *Server) moduleCompletions(uri, prefix string) []CompletionItem {
+	document := s.document(uri)
+	if document == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []CompletionItem
+	for _, symbol := range document.Symbols {
+		if symbol.Owner != "" || symbol.Implementation || symbol.Kind == symbolModule {
+			continue
+		}
+		key := strings.ToLower(symbol.Name)
+		if (prefix != "" && !strings.HasPrefix(key, prefix)) || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, CompletionItem{Label: symbol.Name, Detail: symbol.Detail, Kind: completionKind(symbol)})
 	}
 	return out
 }
@@ -447,7 +521,13 @@ func (s *Server) lookup(m rpcMessage) {
 			s.reply(m.ID, Hover{Contents: MarkupContent{"markdown", contents}, Range: &hoverRange})
 			return
 		}
-		symbol := s.symbolNamed(word)
+		var symbol *Symbol
+		if len(hits) > 0 {
+			symbol = s.symbolAtLocation(d, hits[0])
+		}
+		if symbol == nil {
+			symbol = s.symbolNamed(word)
+		}
 		if symbol == nil {
 			s.reply(m.ID, nil)
 		} else {

@@ -50,23 +50,17 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 			return members
 		}
 	}
-	if local := localDefinitionLocations(current, name); len(local) > 0 {
+	if local := localDefinitionLocations(current, position, name); len(local) > 0 {
 		return local
 	}
-	var matches []Location
-	for _, ref := range s.symbolRefs(name) {
-		if ref.symbol.Owner == "" {
-			matches = append(matches, Location{URI: ref.uri, Range: ref.symbol.Selection})
-		}
-	}
-	return uniqueLocations(matches)
+	return locationsForRefs(s.visibleSymbolRefs(current, name), lookupIntentAt(current.Text, position))
 }
 
 // localDefinitionLocations keeps a same-named declaration in the current
 // unit ahead of identically named workspace symbols. For routines, the
 // implementation is the useful navigation target.
-func localDefinitionLocations(document *Document, name string) []Location {
-	var implementations, declarations []Location
+func localDefinitionLocations(document *Document, position Position, name string) []Location {
+	var implementations, declarations, values []Location
 	for _, symbol := range document.Symbols {
 		if symbol.Owner != "" || !strings.EqualFold(symbol.Name, name) {
 			continue
@@ -74,14 +68,98 @@ func localDefinitionLocations(document *Document, name string) []Location {
 		location := Location{URI: document.URI, Range: symbol.Selection}
 		if isRoutineSymbol(symbol) && symbol.Implementation {
 			implementations = append(implementations, location)
+		} else if !isRoutineSymbol(symbol) {
+			values = append(values, location)
 		} else {
 			declarations = append(declarations, location)
 		}
 	}
+	if lookupIntentAt(document.Text, position) == lookupValue && len(values) > 0 {
+		return uniqueLocations(values)
+	}
 	if len(implementations) > 0 {
 		return uniqueLocations(implementations)
 	}
-	return uniqueLocations(declarations)
+	if len(declarations) > 0 {
+		return uniqueLocations(declarations)
+	}
+	return uniqueLocations(values)
+}
+
+type lookupIntent int
+
+const (
+	lookupUnknown lookupIntent = iota
+	lookupRoutine
+	lookupValue
+)
+
+// lookupIntentAt distinguishes the two unambiguous forms that matter for
+// same-named routines and variables: a call (Name(...)) and an assignment
+// target (Name := ...). Delphi permits routine calls without parentheses, so
+// the unknown case deliberately keeps the established routine-first behavior.
+func lookupIntentAt(text string, position Position) lookupIntent {
+	lines := strings.Split(text, "\n")
+	if position.Line < 0 || position.Line >= len(lines) {
+		return lookupUnknown
+	}
+	line := lines[position.Line]
+	start, end := position.Character, position.Character
+	if start > len(line) {
+		start = len(line)
+		end = start
+	}
+	for start > 0 && isWordChar(line[start-1]) {
+		start--
+	}
+	for end < len(line) && isWordChar(line[end]) {
+		end++
+	}
+	for end < len(line) && (line[end] == ' ' || line[end] == '\t') {
+		end++
+	}
+	if strings.HasPrefix(line[end:], ":=") {
+		return lookupValue
+	}
+	if end < len(line) && line[end] == '(' {
+		return lookupRoutine
+	}
+	return lookupUnknown
+}
+
+// visibleSymbolRefs returns only top-level declarations that another unit can
+// legally resolve. Implementation declarations remain available within their
+// own document through localDefinitionLocations above.
+func (s *Server) visibleSymbolRefs(current *Document, name string) []symbolRef {
+	var refs []symbolRef
+	for _, ref := range s.symbolRefs(name) {
+		if (current == nil || ref.uri != current.URI) && ref.symbol.Implementation {
+			continue
+		}
+		if ref.symbol.Owner == "" {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+func locationsForRefs(refs []symbolRef, intent lookupIntent) []Location {
+	var routines, values []Location
+	for _, ref := range refs {
+		location := Location{URI: ref.uri, Range: ref.symbol.Selection}
+		if isRoutineSymbol(ref.symbol) {
+			routines = append(routines, location)
+		} else {
+			values = append(values, location)
+		}
+	}
+	if intent == lookupValue && len(values) > 0 {
+		return uniqueLocations(values)
+	}
+	if (intent == lookupRoutine || intent == lookupUnknown) && len(routines) > 0 {
+		return uniqueLocations(routines)
+	}
+	return uniqueLocations(values)
 }
 
 func receiverAt(text string, position Position) string {
