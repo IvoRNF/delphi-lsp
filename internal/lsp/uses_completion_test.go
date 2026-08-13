@@ -68,3 +68,33 @@ func TestUsesClauseCompletionAfterCommaExcludesSymbols(t *testing.T) {
 		t.Fatalf("uses completion = %#v; want [First Second]", got)
 	}
 }
+
+func TestUsesClauseCompletionInImplementationSection(t *testing.T) {
+	main := Parse("file:///workspace/Main.pas", `unit Main;
+
+interface
+
+uses InterfaceUnit;
+
+implementation
+
+uses
+  Implementation.
+
+end.
+`)
+	interfaceUnit := Parse("file:///workspace/InterfaceUnit.pas", "unit InterfaceUnit;\ninterface\nimplementation\nend.\n")
+	implementationUnit := Parse("file:///workspace/Implementation.Unit.pas", "unit Implementation.Unit;\ninterface\nimplementation\nend.\n")
+
+	server := NewServer(nil, nil)
+	server.indexReplace(main.URI, main)
+	server.indexReplace(interfaceUnit.URI, interfaceUnit)
+	server.indexReplace(implementationUnit.URI, implementationUnit)
+	server.noteUnit(interfaceUnit.URI, interfaceUnit.Text)
+	server.noteUnit(implementationUnit.URI, implementationUnit.Text)
+
+	items := server.completions(main.URI, Position{Line: 9, Character: len("  Implementation.")})
+	if len(items) != 1 || items[0].Label != "Implementation.Unit" {
+		t.Fatalf("implementation uses completion = %#v; want only Implementation.Unit", items)
+	}
+}

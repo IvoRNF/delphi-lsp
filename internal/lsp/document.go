@@ -458,7 +458,11 @@ func usesClauseAt(text string, position Position) bool {
 			end = position.Character
 		}
 		if strings.Contains(line[:end], ";") {
-			return false
+			inUses = false
+			if lineNumber == position.Line {
+				return false
+			}
+			continue
 		}
 		if lineNumber == position.Line {
 			return true
