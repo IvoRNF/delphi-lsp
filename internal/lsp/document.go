@@ -270,9 +270,9 @@ func Parse(uri, text string) *Document {
 				inVarSection = false
 			}
 		}
-		if strings.Contains(upper, "TODO") {
-			document.Diagnostics = append(document.Diagnostics, Diagnostic{Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Severity: 3, Source: "delphi-lsp", Message: "TODO"})
-		}
+		// if strings.Contains(upper, "TODO") {
+		// 	document.Diagnostics = append(document.Diagnostics, Diagnostic{Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Severity: 3, Source: "delphi-lsp", Message: "TODO"})
+		// }
 	}
 	closeRoutine(len(lines) - 1)
 	closeType(len(lines) - 1)
