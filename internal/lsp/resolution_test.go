@@ -22,6 +22,41 @@ end;
 	}
 }
 
+func TestDefinitionResolvesContinuedCommaSeparatedRoutineLocals(t *testing.T) {
+	document := Parse("file:///comma-locals.pas", `
+procedure Run;
+var
+  FirstValue,
+  SecondValue: Integer;
+  procedure Prepare;
+  begin
+  end;
+begin
+  FirstValue := SecondValue;
+end;
+`)
+	server := NewServer(nil, nil)
+	server.indexReplace(document.URI, document)
+
+	for _, check := range []struct {
+		name      string
+		character int
+		wantStart int
+		wantLine  int
+	}{
+		{name: "FirstValue", character: 4, wantLine: 3, wantStart: 2},
+		{name: "SecondValue", character: 18, wantLine: 4, wantStart: 2},
+	} {
+		locations := server.definitionLocations(document, Position{Line: 9, Character: check.character}, check.name)
+		if len(locations) != 1 || locations[0].Range.Start.Line != check.wantLine || locations[0].Range.Start.Character != check.wantStart {
+			t.Fatalf("definition for %s = %#v", check.name, locations)
+		}
+		if symbol := server.symbolAtLocation(document, locations[0]); symbol == nil || symbol.Detail != check.name+": Integer" {
+			t.Fatalf("hover symbol for %s = %#v", check.name, symbol)
+		}
+	}
+}
+
 func TestDefinitionResolvesGlobalVariables(t *testing.T) {
 	document := Parse("file:///globals.pas", `
 unit Globals;

@@ -44,6 +44,12 @@ type UnitReference struct {
 	Range Range
 }
 
+type routineContext struct {
+	index int
+	body  bool
+	depth int
+}
+
 var declaration = regexp.MustCompile(`(?i)^\s*(procedure|function|constructor|destructor|type|var|const|property)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(.*)$`)
 
 // Delphi permits the last field in a record (and the last declaration in a
@@ -67,6 +73,10 @@ func Parse(uri, text string) *Document {
 	inImplementation, inUses := false, false
 	currentRoutine, currentTypeIndex, routineDepth := -1, -1, 0
 	currentType := ""
+	routineStack := []routineContext{}
+	pendingTypedDeclaration, pendingTypedOwner := "", ""
+	pendingTypedStart := 0
+	pendingTypedImplementation := false
 	endPosition := func(line int) Position {
 		if line < 0 {
 			line = 0
@@ -80,6 +90,12 @@ func Parse(uri, text string) *Document {
 			}
 			document.Symbols[currentRoutine].Scope.End = endPosition(line)
 		}
+		if len(routineStack) > 0 {
+			previous := routineStack[len(routineStack)-1]
+			routineStack = routineStack[:len(routineStack)-1]
+			currentRoutine, routineBody, routineDepth = previous.index, previous.body, previous.depth
+			return
+		}
 		currentRoutine, routineDepth, routineBody = -1, 0, false
 	}
 	closeType := func(line int) {
@@ -87,6 +103,29 @@ func Parse(uri, text string) *Document {
 			document.Symbols[currentTypeIndex].Scope.End = endPosition(line)
 		}
 		currentType, currentTypeIndex = "", -1
+	}
+	consumeTypedVariableLine := func(line string, lineNumber int, owner string, implementationOnly bool) bool {
+		if pendingTypedDeclaration != "" {
+			pendingTypedDeclaration += "\n" + line
+			if addTypedVariables(document, pendingTypedDeclaration, pendingTypedStart, pendingTypedOwner, pendingTypedImplementation) {
+				pendingTypedDeclaration = ""
+				return true
+			}
+			if typedVariableContinues(line) {
+				return true
+			}
+			pendingTypedDeclaration = ""
+			return false
+		}
+		if addTypedVariables(document, line, lineNumber, owner, implementationOnly) {
+			return true
+		}
+		if typedVariableContinues(line) {
+			pendingTypedDeclaration, pendingTypedOwner = line, owner
+			pendingTypedStart, pendingTypedImplementation = lineNumber, implementationOnly
+			return true
+		}
+		return false
 	}
 
 	for lineNumber, line := range lines {
@@ -197,7 +236,9 @@ func Parse(uri, text string) *Document {
 			if currentType != "" && kind == symbolFunction {
 				kind = symbolMethod
 			}
-			if isRoutine {
+			if isRoutine && currentRoutine >= 0 {
+				routineStack = append(routineStack, routineContext{index: currentRoutine, body: routineBody, depth: routineDepth})
+			} else if isRoutine {
 				closeRoutine(lineNumber - 1)
 			}
 			owner := ""
@@ -243,7 +284,7 @@ func Parse(uri, text string) *Document {
 				inVarSection = true
 				continue
 			}
-			if inVarSection && addTypedVariables(document, line, lineNumber, document.Symbols[currentRoutine].Name, false) {
+			if inVarSection && consumeTypedVariableLine(line, lineNumber, document.Symbols[currentRoutine].Name, false) {
 				continue
 			}
 			lower := strings.ToLower(trimmed)
@@ -259,11 +300,11 @@ func Parse(uri, text string) *Document {
 				}
 			}
 		} else if currentType != "" {
-			if addTypedVariables(document, line, lineNumber, currentType, false) {
+			if consumeTypedVariableLine(line, lineNumber, currentType, false) {
 				continue
 			}
 		} else if inVarSection {
-			if addTypedVariables(document, line, lineNumber, "", inImplementation) {
+			if consumeTypedVariableLine(line, lineNumber, "", inImplementation) {
 				continue
 			}
 			if trimmed != "" && !strings.HasPrefix(trimmed, "//") {
@@ -321,10 +362,32 @@ func addTypedVariables(document *Document, line string, lineNumber int, owner st
 	for _, name := range strings.Split(match[1], ",") {
 		name = strings.TrimSpace(name)
 		start := strings.Index(strings.ToLower(line), strings.ToLower(name))
-		selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(name)}}
-		document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: name + ": " + strings.TrimSpace(match[2]), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(line)}}, Selection: selection, Implementation: implementationOnly && owner == ""})
+		selection := Range{Start: positionAtOffset(line, lineNumber, start), End: positionAtOffset(line, lineNumber, start+len(name))}
+		document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: name + ": " + strings.TrimSpace(match[2]), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: positionAtOffset(line, lineNumber, len(line))}, Selection: selection, Implementation: implementationOnly && owner == ""})
 	}
 	return true
+}
+
+// typedVariableContinues reports a declaration name list that continues on
+// the next physical line, such as "FirstValue," followed by "SecondValue:
+// Integer;". Delphi treats newlines as ordinary whitespace in declarations.
+func typedVariableContinues(line string) bool {
+	return strings.HasSuffix(strings.TrimSpace(line), ",")
+}
+
+func positionAtOffset(text string, firstLine, offset int) Position {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(text) {
+		offset = len(text)
+	}
+	prefix := text[:offset]
+	line := firstLine + strings.Count(prefix, "\n")
+	if lastNewline := strings.LastIndex(prefix, "\n"); lastNewline >= 0 {
+		return Position{Line: line, Character: len(prefix) - lastNewline - 1}
+	}
+	return Position{Line: line, Character: len(prefix)}
 }
 
 func addParameters(document *Document, line string, lineNumber int, owner string) {

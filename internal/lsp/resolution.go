@@ -210,13 +210,18 @@ func declaredTypeOf(document *Document, name string, routine *Symbol) string {
 	return ""
 }
 func routineAt(document *Document, position Position) *Symbol {
+	var current *Symbol
 	for index := range document.Symbols {
 		symbol := &document.Symbols[index]
 		if symbol.Kind == symbolFunction && position.Line >= symbol.Scope.Start.Line && position.Line <= symbol.Scope.End.Line {
-			return symbol
+			// Nested routines overlap their enclosing routine's range. Prefer the
+			// innermost matching range instead of depending on symbol sort order.
+			if current == nil || symbol.Scope.Start.Line >= current.Scope.Start.Line {
+				current = symbol
+			}
 		}
 	}
-	return nil
+	return current
 }
 
 func memberOwnerAt(document *Document, position Position, routine *Symbol) string {
