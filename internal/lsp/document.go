@@ -33,6 +33,10 @@ type Symbol struct {
 
 type Document struct {
 	URI, Text   string
+	// Lines caches the line split of Text, computed once in Parse. Position
+	// helpers (wordAt, prefixAt, usesClauseAt, ...) use it instead of re-splitting
+	// the whole document on every hover/definition/completion request.
+	Lines       []string
 	Symbols     []Symbol
 	Uses        []UnitReference
 	Diagnostics []Diagnostic
@@ -65,8 +69,8 @@ func Parse(uri, text string) *Document {
 	// LSP requires publishDiagnostics.diagnostics to be an array. Keep this
 	// non-nil even when parsing finds no diagnostics so JSON encodes it as []
 	// rather than null (which some clients, including Neovim, cannot handle).
-	document := &Document{URI: uri, Text: text, Diagnostics: []Diagnostic{}}
 	lines := strings.Split(text, "\n")
+	document := &Document{URI: uri, Text: text, Lines: lines, Diagnostics: []Diagnostic{}}
 	active := []bool{true}
 	inVarSection, routineBody := false, false
 	inTypeSection := false
@@ -129,7 +133,8 @@ func Parse(uri, text string) *Document {
 	}
 
 	for lineNumber, line := range lines {
-		trimmed, upper := strings.TrimSpace(line), strings.ToUpper(strings.TrimSpace(line))
+		trimmed := strings.TrimSpace(line)
+		upper := strings.ToUpper(trimmed)
 		if strings.HasPrefix(upper, "{$IFDEF ") || strings.HasPrefix(upper, "{$IFNDEF ") {
 			active = append(active, active[len(active)-1])
 			continue
@@ -438,8 +443,7 @@ func addFunctionResult(document *Document, suffix string, lineNumber int, select
 	})
 }
 
-func wordAt(text string, position Position) string {
-	lines := strings.Split(text, "\n")
+func wordAt(lines []string, position Position) string {
 	if position.Line < 0 || position.Line >= len(lines) {
 		return ""
 	}
@@ -466,8 +470,7 @@ func isWordChar(character byte) bool {
 
 // prefixAt returns the partial identifier immediately before the cursor, used
 // to scope completion results to what the user has already typed.
-func prefixAt(text string, position Position) string {
-	lines := strings.Split(text, "\n")
+func prefixAt(lines []string, position Position) string {
 	if position.Line < 0 || position.Line >= len(lines) {
 		return ""
 	}
@@ -484,8 +487,7 @@ func prefixAt(text string, position Position) string {
 
 // unitPrefixAt is prefixAt for a Delphi unit name, which may be scoped with
 // dots (for example, Company.Data.Sql).
-func unitPrefixAt(text string, position Position) string {
-	lines := strings.Split(text, "\n")
+func unitPrefixAt(lines []string, position Position) string {
 	if position.Line < 0 || position.Line >= len(lines) {
 		return ""
 	}
@@ -503,8 +505,7 @@ func unitPrefixAt(text string, position Position) string {
 // usesClauseAt reports whether position is inside a uses declaration. It
 // deliberately follows the parser's line-oriented treatment of uses clauses,
 // including multi-line declarations.
-func usesClauseAt(text string, position Position) bool {
-	lines := strings.Split(text, "\n")
+func usesClauseAt(lines []string, position Position) bool {
 	if position.Line < 0 || position.Line >= len(lines) {
 		return false
 	}

@@ -254,15 +254,15 @@ func (s *Server) workspaceSymbols(q string) []SymbolInformation {
 	s.mu.RLock()
 	names := make([]string, 0, len(s.byName))
 	for key := range s.byName {
+		if q != "" && !strings.Contains(key, q) {
+			continue
+		}
 		names = append(names, key)
 	}
 	s.mu.RUnlock()
 	sort.Strings(names)
 	var out []SymbolInformation
 	for _, key := range names {
-		if q != "" && !strings.Contains(key, q) {
-			continue
-		}
 		for _, ref := range s.symbolRefs(key) {
 			if ref.symbol.Implementation {
 				continue
@@ -282,10 +282,10 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 	prefix := ""
 	current := s.document(uri)
 	if current != nil {
-		if usesClauseAt(current.Text, position) {
-			return s.unitCompletions(unitPrefixAt(current.Text, position))
+		if usesClauseAt(current.Lines, position) {
+			return s.unitCompletions(unitPrefixAt(current.Lines, position))
 		}
-		prefix = strings.ToLower(prefixAt(current.Text, position))
+		prefix = strings.ToLower(prefixAt(current.Lines, position))
 		if typeName := s.memberCompletionType(current, position); typeName != "" {
 			return s.memberCompletions(typeName, prefix)
 		}
@@ -338,14 +338,14 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 	s.mu.RLock()
 	names := make([]string, 0, len(s.byName))
 	for key := range s.byName {
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
 		names = append(names, key)
 	}
 	s.mu.RUnlock()
 	sort.Strings(names)
 	for _, key := range names {
-		if prefix != "" && !strings.HasPrefix(key, prefix) {
-			continue
-		}
 		if seen[key] {
 			continue
 		}
@@ -409,7 +409,7 @@ func (s *Server) unitCompletions(prefix string) []CompletionItem {
 // such as `Math.`. Type-member completion takes precedence when a local
 // variable has the same spelling as its unit.
 func (s *Server) moduleCompletionURI(document *Document, position Position) string {
-	name := qualifiedReceiverAt(document.Text, position)
+	name := qualifiedReceiverAt(document.Lines, position)
 	if name == "" {
 		return ""
 	}
@@ -421,8 +421,7 @@ func (s *Server) moduleCompletionURI(document *Document, position Position) stri
 
 // qualifiedReceiverAt is like receiverAt but preserves dots in a unit name,
 // allowing scoped units such as Company.Tools.Text.`
-func qualifiedReceiverAt(text string, position Position) string {
-	lines := strings.Split(text, "\n")
+func qualifiedReceiverAt(lines []string, position Position) string {
 	if position.Line < 0 || position.Line >= len(lines) {
 		return ""
 	}
@@ -473,7 +472,7 @@ func (s *Server) moduleCompletions(uri, prefix string) []CompletionItem {
 // its declared type. A non-empty result makes completion member-only instead
 // of mixing in unrelated workspace symbols.
 func (s *Server) memberCompletionType(document *Document, position Position) string {
-	receiver := receiverAt(document.Text, position)
+	receiver := receiverAt(document.Lines, position)
 	if receiver == "" {
 		return ""
 	}
@@ -561,7 +560,7 @@ func (s *Server) lookup(m rpcMessage) {
 		s.reply(m.ID, nil)
 		return
 	}
-	word := wordAt(d.Text, p.Position)
+	word := wordAt(d.Lines, p.Position)
 	hits := s.definitionLocations(d, p.Position, word)
 	if m.Method == "textDocument/hover" {
 		if unit := d.useAt(p.Position); unit != nil {
@@ -657,15 +656,12 @@ func (s *Server) indexWorker() {
 			s.mu.Unlock()
 			return
 		}
+		// Pop under the lock so two workers can never parse the same file.
 		uri := s.pendingQueue[0]
-		s.mu.Unlock()
-		s.indexFile(uri)
-		s.mu.Lock()
-		if len(s.pendingQueue) > 0 && s.pendingQueue[0] == uri {
-			s.pendingQueue = s.pendingQueue[1:]
-		}
+		s.pendingQueue = s.pendingQueue[1:]
 		delete(s.pendingSet, uri)
 		s.mu.Unlock()
+		s.indexFile(uri)
 	}
 }
 

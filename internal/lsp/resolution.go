@@ -53,7 +53,7 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 	if local := localDefinitionLocations(current, position, name); len(local) > 0 {
 		return local
 	}
-	return locationsForRefs(s.visibleSymbolRefs(current, name), lookupIntentAt(current.Text, position))
+	return locationsForRefs(s.visibleSymbolRefs(current, name), lookupIntentAt(current.Lines, position))
 }
 
 // localDefinitionLocations keeps a same-named declaration in the current
@@ -74,7 +74,7 @@ func localDefinitionLocations(document *Document, position Position, name string
 			declarations = append(declarations, location)
 		}
 	}
-	if lookupIntentAt(document.Text, position) == lookupValue && len(values) > 0 {
+	if lookupIntentAt(document.Lines, position) == lookupValue && len(values) > 0 {
 		return uniqueLocations(values)
 	}
 	if len(implementations) > 0 {
@@ -98,8 +98,7 @@ const (
 // same-named routines and variables: a call (Name(...)) and an assignment
 // target (Name := ...). Delphi permits routine calls without parentheses, so
 // the unknown case deliberately keeps the established routine-first behavior.
-func lookupIntentAt(text string, position Position) lookupIntent {
-	lines := strings.Split(text, "\n")
+func lookupIntentAt(lines []string, position Position) lookupIntent {
 	if position.Line < 0 || position.Line >= len(lines) {
 		return lookupUnknown
 	}
@@ -162,8 +161,7 @@ func locationsForRefs(refs []symbolRef, intent lookupIntent) []Location {
 	return uniqueLocations(values)
 }
 
-func receiverAt(text string, position Position) string {
-	lines := strings.Split(text, "\n")
+func receiverAt(lines []string, position Position) string {
 	if position.Line < 0 || position.Line >= len(lines) {
 		return ""
 	}
