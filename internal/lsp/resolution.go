@@ -38,6 +38,11 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 			return uniqueLocations(parameters)
 		}
 	}
+	if typeName := s.memberTypeAt(current, position); typeName != "" {
+		if members := s.memberDefinitionLocations(current, typeName, name); len(members) > 0 {
+			return members
+		}
+	}
 	owner := memberOwnerAt(current, position, routine)
 	if owner != "" {
 		var members []Location
@@ -162,6 +167,17 @@ func locationsForRefs(refs []symbolRef, intent lookupIntent) []Location {
 }
 
 func receiverAt(lines []string, position Position) string {
+	receiver := receiverExpressionAt(lines, position)
+	if strings.Contains(receiver, "[") {
+		return ""
+	}
+	return receiver
+}
+
+// receiverExpressionAt returns the expression immediately before the member
+// access dot. Unlike receiverAt, it includes an indexed receiver such as
+// AItems[Index] so callers can resolve the array element type.
+func receiverExpressionAt(lines []string, position Position) string {
 	if position.Line < 0 || position.Line >= len(lines) {
 		return ""
 	}
@@ -176,12 +192,175 @@ func receiverAt(lines []string, position Position) string {
 	if character == 0 || line[character-1] != '.' {
 		return ""
 	}
-	end := character - 1
+	end := character - 1 // the dot is not part of the receiver
 	start := end
+	if start > 0 && line[start-1] == ']' {
+		depth := 0
+		for start > 0 {
+			start--
+			switch line[start] {
+			case ']':
+				depth++
+			case '[':
+				depth--
+				if depth == 0 {
+					for start > 0 && isWordChar(line[start-1]) {
+						start--
+					}
+					return strings.TrimSpace(line[start:end])
+				}
+			}
+		}
+		return ""
+	}
 	for start > 0 && isWordChar(line[start-1]) {
 		start--
 	}
-	return line[start:end]
+	return strings.TrimSpace(line[start:end])
+}
+
+// memberTypeAt resolves the type of the expression before a dot. It covers
+// ordinary variables as well as array access (for example, Items[0].Name).
+func (s *Server) memberTypeAt(document *Document, position Position) string {
+	expression := receiverExpressionAt(document.Lines, position)
+	if expression == "" {
+		return ""
+	}
+	routine := routineAt(document, position)
+	if strings.EqualFold(expression, "self") && routine != nil {
+		return routine.Owner
+	}
+	base, indexes := indexedExpression(expression)
+	typeName := declaredTypeOf(document, base, routine)
+	if typeName == "" && s.hasType(document, base) {
+		typeName = base
+	}
+	for range indexes {
+		typeName = s.arrayElementType(document, typeName)
+		if typeName == "" {
+			return ""
+		}
+	}
+	return typeName
+}
+
+// indexedExpression splits a simple variable followed by zero or more index
+// expressions. The actual index value is irrelevant for member resolution.
+func indexedExpression(expression string) (string, int) {
+	expression = strings.TrimSpace(expression)
+	indexes := 0
+	for strings.HasSuffix(expression, "]") {
+		depth := 0
+		open := -1
+		for i := len(expression) - 1; i >= 0; i-- {
+			switch expression[i] {
+			case ']':
+				depth++
+			case '[':
+				depth--
+				if depth == 0 {
+					open = i
+				}
+			}
+			if open >= 0 {
+				break
+			}
+		}
+		if open < 0 {
+			return "", 0
+		}
+		indexes++
+		expression = strings.TrimSpace(expression[:open])
+	}
+	if expression == "" {
+		return "", 0
+	}
+	return expression, indexes
+}
+
+func (s *Server) arrayElementType(current *Document, typeName string) string {
+	for seen := map[string]bool{}; typeName != ""; {
+		key := strings.ToLower(strings.TrimSpace(typeName))
+		if seen[key] {
+			return ""
+		}
+		seen[key] = true
+		detail := typeName
+		declared := s.typeDetail(current, typeName)
+		if declared != "" {
+			detail = declared
+		}
+		lower := strings.ToLower(detail)
+		array := strings.Index(lower, "array")
+		of := strings.Index(lower, " of ")
+		if array >= 0 && of > array {
+			return strings.TrimSpace(strings.TrimSuffix(detail[of+4:], ";"))
+		}
+		if declared == "" {
+			return ""
+		}
+		// A type alias may point to another alias before reaching an array.
+		if equal := strings.Index(detail, "="); equal >= 0 {
+			typeName = strings.TrimSpace(strings.TrimSuffix(detail[equal+1:], ";"))
+			continue
+		}
+		return ""
+	}
+	return ""
+}
+
+func (s *Server) typeDetail(current *Document, name string) string {
+	for _, document := range s.documentsIncluding(current) {
+		for _, symbol := range document.Symbols {
+			if symbol.Kind == symbolClass && strings.EqualFold(symbol.Name, name) {
+				return symbol.Detail
+			}
+		}
+	}
+	return ""
+}
+
+func (s *Server) hasType(current *Document, name string) bool {
+	return s.typeDetail(current, name) != ""
+}
+
+func (s *Server) documentsIncluding(current *Document) []*Document {
+	documents := []*Document{current}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, document := range s.docs {
+		if document != current {
+			documents = append(documents, document)
+		}
+	}
+	return documents
+}
+
+func (s *Server) memberDefinitionLocations(current *Document, typeName, name string) []Location {
+	var locations []Location
+	seenTypes := map[string]bool{}
+	var find func(string)
+	find = func(typeName string) {
+		key := strings.ToLower(typeName)
+		if key == "" || seenTypes[key] {
+			return
+		}
+		seenTypes[key] = true
+		for _, document := range s.documentsIncluding(current) {
+			for _, symbol := range document.Symbols {
+				if symbol.Kind == symbolClass && strings.EqualFold(symbol.Name, typeName) {
+					for _, parent := range symbol.Parents {
+						find(parent)
+					}
+				}
+				if strings.EqualFold(symbol.Owner, typeName) && strings.EqualFold(symbol.Name, name) {
+					locations = append(locations, Location{URI: document.URI, Range: symbol.Selection})
+				}
+			}
+		}
+	}
+	find(typeName)
+	return uniqueLocations(locations)
 }
 
 func declaredTypeOf(document *Document, name string, routine *Symbol) string {

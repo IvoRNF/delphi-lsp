@@ -472,23 +472,7 @@ func (s *Server) moduleCompletions(uri, prefix string) []CompletionItem {
 // its declared type. A non-empty result makes completion member-only instead
 // of mixing in unrelated workspace symbols.
 func (s *Server) memberCompletionType(document *Document, position Position) string {
-	receiver := receiverAt(document.Lines, position)
-	if receiver == "" {
-		return ""
-	}
-	routine := routineAt(document, position)
-	if strings.EqualFold(receiver, "self") && routine != nil {
-		return routine.Owner
-	}
-	if typeName := declaredTypeOf(document, receiver, routine); typeName != "" {
-		return typeName
-	}
-	for _, ref := range s.symbolRefs(receiver) {
-		if ref.symbol.Kind == symbolClass {
-			return ref.symbol.Name
-		}
-	}
-	return ""
+	return s.memberTypeAt(document, position)
 }
 
 func (s *Server) memberCompletions(typeName, prefix string) []CompletionItem {

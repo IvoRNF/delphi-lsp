@@ -32,7 +32,7 @@ type Symbol struct {
 }
 
 type Document struct {
-	URI, Text   string
+	URI, Text string
 	// Lines caches the line split of Text, computed once in Parse. Position
 	// helpers (wordAt, prefixAt, usesClauseAt, ...) use it instead of re-splitting
 	// the whole document on every hover/definition/completion request.
@@ -401,8 +401,9 @@ func addParameters(document *Document, line string, lineNumber int, owner string
 		return
 	}
 	for _, group := range strings.Split(line[open+1:close], ";") {
-		group = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(group, "const "), "var "), "out "), "constref "))
-		parts := strings.SplitN(group, ":", 2)
+		group = strings.TrimSpace(group)
+		parameterGroup := stripParameterModifier(group)
+		parts := strings.SplitN(parameterGroup, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
@@ -413,9 +414,20 @@ func addParameters(document *Document, line string, lineNumber int, owner string
 			}
 			start := strings.Index(strings.ToLower(line), strings.ToLower(name))
 			selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(name)}}
-			document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: strings.TrimSpace(group), Owner: owner, Kind: symbolVariable, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(line)}}, Selection: selection})
+			document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: group, Owner: owner, Kind: symbolVariable, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(line)}}, Selection: selection})
 		}
 	}
+}
+
+// stripParameterModifier removes Delphi's optional parameter-passing
+// modifier while preserving the original declaration for hover text.
+func stripParameterModifier(group string) string {
+	for _, modifier := range []string{"constref", "const", "var", "out"} {
+		if len(group) > len(modifier) && strings.EqualFold(group[:len(modifier)], modifier) && (group[len(modifier)] == ' ' || group[len(modifier)] == '\t') {
+			return strings.TrimSpace(group[len(modifier):])
+		}
+	}
+	return group
 }
 
 // addFunctionResult models Delphi's implicit Result variable. It belongs to

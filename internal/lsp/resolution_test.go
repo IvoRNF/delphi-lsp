@@ -313,3 +313,54 @@ end.
 		t.Fatalf("local comma-separated variables missing from completion: %#v", items)
 	}
 }
+
+func TestQualifiedArrayParametersResolveMembersAndCompletions(t *testing.T) {
+	document := Parse("file:///qualified-array.pas", `
+type
+  TItem = record
+    Name: Integer;
+  end;
+  TItems = array of TItem;
+
+procedure Use(CONST Readonly: TItems; VAR Mutable: TItems);
+begin
+  Mutable[0].Name := Readonly[0].Name;
+  Mutable[0].
+  Re
+end;
+`)
+	server := NewServer(nil, nil)
+	server.indexReplace(document.URI, document)
+
+	for _, check := range []struct {
+		name      string
+		character int
+		wantLine  int
+		detail    string
+	}{
+		{name: "Readonly", character: len("  Mutable[0].Name := Re"), wantLine: 7, detail: "CONST Readonly: TItems"},
+		{name: "Mutable", character: len("  Mu"), wantLine: 7, detail: "VAR Mutable: TItems"},
+		{name: "Name", character: len("  Mutable[0].Na"), wantLine: 3, detail: "Name: Integer"},
+	} {
+		locations := server.definitionLocations(document, Position{Line: 9, Character: check.character}, check.name)
+		if len(locations) != 1 || locations[0].Range.Start.Line != check.wantLine {
+			t.Fatalf("definition for %s = %#v", check.name, locations)
+		}
+		if symbol := server.symbolAtLocation(document, locations[0]); symbol == nil || symbol.Detail != check.detail {
+			t.Fatalf("hover target for %s = %#v", check.name, symbol)
+		}
+	}
+
+	memberItems := completionKinds(server.completions(document.URI, Position{Line: 10, Character: len("  Mutable[0].")}))
+	if memberItems["Name"] != 5 {
+		t.Fatalf("array element completion = %#v", memberItems)
+	}
+	readonlyItems := completionKinds(server.completions(document.URI, Position{Line: 11, Character: len("  Re")}))
+	if readonlyItems["Readonly"] != 6 {
+		t.Fatalf("const parameter missing from completion = %#v", readonlyItems)
+	}
+	mutableItems := completionKinds(server.completions(document.URI, Position{Line: 9, Character: len("  Mu")}))
+	if mutableItems["Mutable"] != 6 {
+		t.Fatalf("var parameter missing from completion = %#v", mutableItems)
+	}
+}
