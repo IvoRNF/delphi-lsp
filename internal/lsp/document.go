@@ -258,6 +258,10 @@ func Parse(uri, text string) *Document {
 			if currentRoutine >= 0 && kind == symbolConstant {
 				owner = document.Symbols[currentRoutine].Name
 			}
+			if isRoutine && currentRoutine >= 0 {
+				// A nested routine is visible only within its enclosing routine.
+				owner = document.Symbols[currentRoutine].Name
+			}
 			if currentType != "" && (kind == symbolMethod || kind == symbolProperty) {
 				owner = currentType
 			}
@@ -394,6 +398,12 @@ func addTypedVariables(document *Document, line string, lineNumber int, owner st
 	kind := symbolVariable
 	if owner != "" {
 		kind = symbolField
+		for _, symbol := range document.Symbols {
+			if isRoutineSymbol(symbol) && strings.EqualFold(symbol.Name, owner) {
+				kind = symbolVariable
+				break
+			}
+		}
 	}
 	for _, name := range strings.Split(match[1], ",") {
 		name = strings.TrimSpace(name)

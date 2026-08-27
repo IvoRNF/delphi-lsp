@@ -60,6 +60,51 @@ end.
 	}
 }
 
+func TestNestedRoutineResolvesEnclosingLocalsParametersAndCompletions(t *testing.T) {
+	document := Parse("file:///millenium_estoque.pas", `
+procedure Process(const OuterParameter: string);
+var
+  ListFilial: TStringList;
+  Shadowed: Integer;
+  procedure GetDescFiliais;
+  var
+    Shadowed: string;
+  begin
+    ListFilial.CommaText;
+    OuterParameter := '';
+    Shadowed := '';
+  end;
+begin
+end;
+`)
+	server := NewServer(nil, nil)
+	server.indexReplace(document.URI, document)
+
+	for _, check := range []struct {
+		name     string
+		position Position
+		wantLine int
+		want     string
+	}{
+		{name: "ListFilial", position: Position{Line: 9, Character: 4}, wantLine: 3, want: "ListFilial: TStringList"},
+		{name: "OuterParameter", position: Position{Line: 10, Character: 4}, wantLine: 1, want: "const OuterParameter: string"},
+		{name: "Shadowed", position: Position{Line: 11, Character: 4}, wantLine: 7, want: "Shadowed: string"},
+	} {
+		locations := server.definitionLocations(document, check.position, check.name)
+		if len(locations) != 1 || locations[0].Range.Start.Line != check.wantLine {
+			t.Fatalf("definition for %s = %#v", check.name, locations)
+		}
+		if symbol := server.symbolAtLocation(document, locations[0]); symbol == nil || symbol.Detail != check.want {
+			t.Fatalf("hover target for %s = %#v", check.name, symbol)
+		}
+	}
+
+	items := completionKinds(server.completions(document.URI, Position{Line: 8, Character: 0}))
+	if items["ListFilial"] != 6 || items["OuterParameter"] != 6 || items["Shadowed"] != 6 {
+		t.Fatalf("nested routine completions = %#v", items)
+	}
+}
+
 func TestDefinitionResolvesContinuedCommaSeparatedRoutineLocals(t *testing.T) {
 	document := Parse("file:///comma-locals.pas", `
 procedure Run;

@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -15,27 +16,20 @@ func (s *Server) definitionLocations(current *Document, position Position, name 
 	if implementation := s.routineImplementationAt(current, position, name); implementation != nil {
 		return []Location{*implementation}
 	}
+	routines := routineScopesAt(current, position)
 	routine := routineAt(current, position)
-	if routine != nil {
-		// Parameters belong to the active routine header. This keeps an
-		// interface declaration's parameters out of an implementation lookup.
-		var parameters []Location
-		var locals []Location
+	// Delphi nested routines inherit their enclosing routine's locals and
+	// parameters. Search from the innermost scope outward so a shadowing local
+	// always wins over an enclosing declaration or a workspace symbol.
+	for _, scope := range routines {
+		var locations []Location
 		for _, symbol := range current.Symbols {
-			if strings.EqualFold(symbol.Name, name) && strings.EqualFold(symbol.Owner, routine.Name) {
-				location := Location{URI: current.URI, Range: symbol.Selection}
-				if symbol.Selection.Start.Line == routine.Selection.Start.Line {
-					parameters = append(parameters, location)
-				} else if symbol.Selection.Start.Line >= routine.Scope.Start.Line && symbol.Selection.Start.Line <= routine.Scope.End.Line {
-					locals = append(locals, location)
-				}
+			if strings.EqualFold(symbol.Name, name) && strings.EqualFold(symbol.Owner, scope.Name) && symbolInRoutineScope(symbol, *scope) {
+				locations = append(locations, Location{URI: current.URI, Range: symbol.Selection})
 			}
 		}
-		if len(locals) > 0 {
-			return uniqueLocations(locals)
-		}
-		if len(parameters) > 0 {
-			return uniqueLocations(parameters)
+		if len(locations) > 0 {
+			return uniqueLocations(locations)
 		}
 	}
 	if typeName := s.memberTypeAt(current, position); typeName != "" {
@@ -226,12 +220,13 @@ func (s *Server) memberTypeAt(document *Document, position Position) string {
 	if expression == "" {
 		return ""
 	}
+	routines := routineScopesAt(document, position)
 	routine := routineAt(document, position)
 	if strings.EqualFold(expression, "self") && routine != nil {
 		return routine.Owner
 	}
 	base, indexes := indexedExpression(expression)
-	typeName := declaredTypeOf(document, base, routine)
+	typeName := declaredTypeOf(document, base, routines)
 	if typeName == "" && s.hasType(document, base) {
 		typeName = base
 	}
@@ -363,14 +358,21 @@ func (s *Server) memberDefinitionLocations(current *Document, typeName, name str
 	return uniqueLocations(locations)
 }
 
-func declaredTypeOf(document *Document, name string, routine *Symbol) string {
+func declaredTypeOf(document *Document, name string, routines []*Symbol) string {
 	owners := []string{""}
-	if routine != nil {
-		owners = []string{routine.Name, routine.Owner, ""}
+	if len(routines) > 0 {
+		owners = make([]string, 0, len(routines)+1)
+		for _, routine := range routines {
+			owners = append(owners, routine.Name)
+		}
+		owners = append(owners, "")
 	}
 	for _, owner := range owners {
 		for _, symbol := range document.Symbols {
 			if !strings.EqualFold(symbol.Name, name) || !strings.EqualFold(symbol.Owner, owner) {
+				continue
+			}
+			if owner != "" && !symbolInRoutineScopes(symbol, routines) {
 				continue
 			}
 			if symbol.Kind == symbolClass {
@@ -387,18 +389,44 @@ func declaredTypeOf(document *Document, name string, routine *Symbol) string {
 	return ""
 }
 func routineAt(document *Document, position Position) *Symbol {
-	var current *Symbol
+	routines := routineScopesAt(document, position)
+	if len(routines) == 0 {
+		return nil
+	}
+	return routines[0]
+}
+
+// routineScopesAt returns all active routine scopes from innermost to
+// outermost. Nested routines can read their enclosing routine's parameters
+// and locals, but declarations in the inner scope take precedence.
+func routineScopesAt(document *Document, position Position) []*Symbol {
+	var routines []*Symbol
 	for index := range document.Symbols {
 		symbol := &document.Symbols[index]
 		if symbol.Kind == symbolFunction && position.Line >= symbol.Scope.Start.Line && position.Line <= symbol.Scope.End.Line {
-			// Nested routines overlap their enclosing routine's range. Prefer the
-			// innermost matching range instead of depending on symbol sort order.
-			if current == nil || symbol.Scope.Start.Line >= current.Scope.Start.Line {
-				current = symbol
-			}
+			routines = append(routines, symbol)
 		}
 	}
-	return current
+	sort.SliceStable(routines, func(i, j int) bool {
+		if routines[i].Scope.Start.Line != routines[j].Scope.Start.Line {
+			return routines[i].Scope.Start.Line > routines[j].Scope.Start.Line
+		}
+		return routines[i].Scope.End.Line < routines[j].Scope.End.Line
+	})
+	return routines
+}
+
+func symbolInRoutineScope(symbol Symbol, routine Symbol) bool {
+	return symbol.Selection.Start.Line >= routine.Selection.Start.Line && symbol.Selection.Start.Line <= routine.Scope.End.Line
+}
+
+func symbolInRoutineScopes(symbol Symbol, routines []*Symbol) bool {
+	for _, routine := range routines {
+		if strings.EqualFold(symbol.Owner, routine.Name) && symbolInRoutineScope(symbol, *routine) {
+			return true
+		}
+	}
+	return false
 }
 
 func memberOwnerAt(document *Document, position Position, routine *Symbol) string {

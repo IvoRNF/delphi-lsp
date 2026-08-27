@@ -310,10 +310,25 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 		out = append(out, CompletionItem{Label: name, Detail: detail, Kind: kind})
 	}
 	if d := current; d != nil {
-		routine := routineAt(d, position)
+		routines := routineScopesAt(d, position)
+		activeOwners := make(map[string]bool, len(routines))
+		// Add nested-scope symbols before enclosing ones so completion respects
+		// normal Delphi shadowing rules.
+		for _, routine := range routines {
+			activeOwners[strings.ToLower(routine.Name)] = true
+			for i := range d.Symbols {
+				sym := &d.Symbols[i]
+				if strings.EqualFold(sym.Owner, routine.Name) && symbolInRoutineScope(*sym, *routine) {
+					add(sym.Name, sym.Detail, completionKind(*sym))
+				}
+			}
+		}
 		for i := range d.Symbols {
 			sym := &d.Symbols[i]
-			if sym.Owner != "" && (routine == nil || !strings.EqualFold(sym.Owner, routine.Name)) {
+			if sym.Owner != "" {
+				continue
+			}
+			if activeOwners[strings.ToLower(sym.Name)] {
 				continue
 			}
 			add(sym.Name, sym.Detail, completionKind(*sym))
