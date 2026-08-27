@@ -1,0 +1,103 @@
+{
+  "name": "delphi-lsp",
+  "displayName": "Delphi LSP",
+  "description": "Language support for Delphi and Object Pascal powered by the bundled delphi-lsp server.",
+  "version": "0.1.1",
+  "publisher": "delphi-lsp",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "delphi",
+    "object pascal",
+    "pascal",
+    "lsp"
+  ],
+  "activationEvents": [
+    "onLanguage:delphi",
+    "onLanguage:pascal",
+    "onLanguage:objectpascal"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "delphi",
+        "aliases": ["Delphi", "Object Pascal"],
+        "extensions": [".pas", ".dpr", ".dpk", ".dproj", ".inc"],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "pascal",
+        "aliases": ["Pascal"],
+        "extensions": [".pp", ".lpr"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "Delphi LSP",
+      "properties": {
+        "delphiLsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "markdownDescription": "Optional path to a `delphi-lsp` executable. Leave empty to use the bundled Windows x64 server."
+        },
+        "delphiLsp.serverArgs": {
+          "type": "array",
+          "default": [],
+          "scope": "window",
+          "items": { "type": "string" },
+          "description": "Extra arguments passed to the language server."
+        },
+        "delphiLsp.configPath": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "Optional path to `delphi-lsp.json`. Relative paths are resolved from the first workspace folder."
+        },
+        "delphiLsp.project": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "Path to the Delphi `.dproj` project. Relative paths are resolved from the first workspace folder. Ignored when `delphiLsp.configPath` is set."
+        },
+        "delphiLsp.delphiDir": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "Directory containing Delphi source code. Relative paths are resolved from the first workspace folder. Ignored when `delphiLsp.configPath` is set."
+        },
+        "delphiLsp.searchPaths": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "items": { "type": "string" },
+          "markdownDescription": "Additional source directories to index. Relative paths are resolved from the first workspace folder. Ignored when `delphiLsp.configPath` is set."
+        },
+        "delphiLsp.includePaths": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "items": { "type": "string" },
+          "markdownDescription": "Additional include directories. Relative paths are resolved from the first workspace folder. Ignored when `delphiLsp.configPath` is set."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package",
+    "test:syntax": "node --check extension.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.0"
+  }
+}
