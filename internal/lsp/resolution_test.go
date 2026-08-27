@@ -140,6 +140,27 @@ end;
 	}
 }
 
+func TestDefinitionResolvesRoutineLocalWithTypeOnContinuationLine(t *testing.T) {
+	document := Parse("file:///millenium_lote_separacao.pas", `
+procedure ConsultaConferido;
+var
+  PrefatsLoteSeparacao, Produtos, ProdsPrefatConferido, dadosLoteSeparacao
+    : IWtsWriteData;
+begin
+  if dadosLoteSeparacao.eof then
+  begin
+  end;
+end;
+`)
+	server := NewServer(nil, nil)
+	server.indexReplace(document.URI, document)
+
+	locations := server.definitionLocations(document, Position{Line: 6, Character: 7}, "dadosLoteSeparacao")
+	if len(locations) != 1 || locations[0].URI != document.URI || locations[0].Range.Start.Line != 3 {
+		t.Fatalf("dadosLoteSeparacao definition = %#v", locations)
+	}
+}
+
 func TestDefinitionResolvesGlobalVariables(t *testing.T) {
 	document := Parse("file:///globals.pas", `
 unit Globals;

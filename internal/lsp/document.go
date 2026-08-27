@@ -59,6 +59,7 @@ var declaration = regexp.MustCompile(`(?i)^\s*(procedure|function|constructor|de
 // Delphi permits the last field in a record (and the last declaration in a
 // var block) to omit its trailing semicolon.
 var typedVariable = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:\s*([^;]+?)(?:\s*;|\s*$)`)
+var incompleteTypedVariable = regexp.MustCompile(`(?i)^\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+\s*,?\s*$`)
 var constantDefinition = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)(?:\s*;|\s*$)`)
 var typeDefinition = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(class|record|interface|dispinterface|object)\b\s*(?:\(([^)]*)\))?`)
 var typeAlias = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+);`)
@@ -436,9 +437,11 @@ func addConstants(document *Document, line string, lineNumber int, owner string,
 
 // typedVariableContinues reports a declaration name list that continues on
 // the next physical line, such as "FirstValue," followed by "SecondValue:
-// Integer;". Delphi treats newlines as ordinary whitespace in declarations.
+// Integer;" or "FirstValue, SecondValue" followed by ": Integer;". Delphi
+// treats newlines as ordinary whitespace in declarations.
 func typedVariableContinues(line string) bool {
-	return strings.HasSuffix(strings.TrimSpace(line), ",")
+	trimmed := strings.TrimSpace(line)
+	return strings.HasSuffix(trimmed, ",") || incompleteTypedVariable.MatchString(trimmed)
 }
 
 func positionAtOffset(text string, firstLine, offset int) Position {
