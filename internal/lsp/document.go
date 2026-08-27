@@ -59,6 +59,7 @@ var declaration = regexp.MustCompile(`(?i)^\s*(procedure|function|constructor|de
 // Delphi permits the last field in a record (and the last declaration in a
 // var block) to omit its trailing semicolon.
 var typedVariable = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:\s*([^;]+?)(?:\s*;|\s*$)`)
+var constantDefinition = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)(?:\s*;|\s*$)`)
 var typeDefinition = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(class|record|interface|dispinterface|object)\b\s*(?:\(([^)]*)\))?`)
 var typeAlias = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+);`)
 var unitHeader = regexp.MustCompile(`(?i)^\s*unit\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;`)
@@ -72,7 +73,7 @@ func Parse(uri, text string) *Document {
 	lines := strings.Split(text, "\n")
 	document := &Document{URI: uri, Text: text, Lines: lines, Diagnostics: []Diagnostic{}}
 	active := []bool{true}
-	inVarSection, routineBody := false, false
+	inVarSection, inConstSection, routineBody := false, false, false
 	inTypeSection := false
 	inImplementation, inUses := false, false
 	currentRoutine, currentTypeIndex, routineDepth := -1, -1, 0
@@ -158,7 +159,7 @@ func Parse(uri, text string) *Document {
 		}
 		if strings.EqualFold(trimmed, "implementation") {
 			closeRoutine(lineNumber - 1)
-			inImplementation, inUses, inTypeSection, inVarSection = true, false, false, false
+			inImplementation, inUses, inTypeSection, inVarSection, inConstSection = true, false, false, false, false
 			continue
 		}
 		if match := usesStart.FindStringSubmatch(line); match != nil {
@@ -179,10 +180,17 @@ func Parse(uri, text string) *Document {
 
 		if strings.EqualFold(trimmed, "type") {
 			inTypeSection = true
+			inConstSection = false
 			continue
 		}
 		if currentRoutine < 0 && currentType == "" && strings.EqualFold(trimmed, "var") {
 			inVarSection = true
+			inConstSection = false
+			inTypeSection = false
+			continue
+		}
+		if currentRoutine < 0 && currentType == "" && strings.EqualFold(trimmed, "const") {
+			inConstSection = true
 			inTypeSection = false
 			continue
 		}
@@ -247,6 +255,9 @@ func Parse(uri, text string) *Document {
 				closeRoutine(lineNumber - 1)
 			}
 			owner := ""
+			if currentRoutine >= 0 && kind == symbolConstant {
+				owner = document.Symbols[currentRoutine].Name
+			}
 			if currentType != "" && (kind == symbolMethod || kind == symbolProperty) {
 				owner = currentType
 			}
@@ -273,13 +284,17 @@ func Parse(uri, text string) *Document {
 			}
 			if isRoutine {
 				currentRoutine = len(document.Symbols) - 1
-				addParameters(document, line, lineNumber, name)
+				addParameters(document, lines, lineNumber, name)
 				if word == "function" {
 					addFunctionResult(document, match[3], lineNumber, selection, name)
 				}
-				inVarSection = false
+				inVarSection, inConstSection = false, false
 			} else if word == "var" {
 				inVarSection = true
+				inConstSection = false
+			} else if word == "const" {
+				inConstSection = true
+				inVarSection = false
 			}
 			continue
 		}
@@ -287,16 +302,25 @@ func Parse(uri, text string) *Document {
 		if currentRoutine >= 0 {
 			if strings.EqualFold(trimmed, "var") {
 				inVarSection = true
+				inConstSection = false
+				continue
+			}
+			if strings.EqualFold(trimmed, "const") {
+				inConstSection = true
+				inVarSection = false
 				continue
 			}
 			if inVarSection && consumeTypedVariableLine(line, lineNumber, document.Symbols[currentRoutine].Name, false) {
+				continue
+			}
+			if inConstSection && addConstants(document, line, lineNumber, document.Symbols[currentRoutine].Name, false) {
 				continue
 			}
 			lower := strings.ToLower(trimmed)
 			if strings.Contains(lower, "begin") {
 				routineBody = true
 				routineDepth += strings.Count(lower, "begin")
-				inVarSection = false
+				inVarSection, inConstSection = false, false
 			}
 			if routineBody && strings.HasPrefix(lower, "end") {
 				routineDepth--
@@ -314,6 +338,13 @@ func Parse(uri, text string) *Document {
 			}
 			if trimmed != "" && !strings.HasPrefix(trimmed, "//") {
 				inVarSection = false
+			}
+		} else if inConstSection {
+			if addConstants(document, line, lineNumber, "", inImplementation) {
+				continue
+			}
+			if trimmed != "" && !strings.HasPrefix(trimmed, "//") {
+				inConstSection = false
 			}
 		}
 		// if strings.Contains(upper, "TODO") {
@@ -373,6 +404,26 @@ func addTypedVariables(document *Document, line string, lineNumber int, owner st
 	return true
 }
 
+func addConstants(document *Document, line string, lineNumber int, owner string, implementationOnly bool) bool {
+	match := constantDefinition.FindStringSubmatch(line)
+	if match == nil {
+		return false
+	}
+	name := match[1]
+	start := strings.Index(strings.ToLower(line), strings.ToLower(name))
+	selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(name)}}
+	document.Symbols = append(document.Symbols, Symbol{
+		Name:           name,
+		Detail:         strings.TrimSpace(line),
+		Owner:          owner,
+		Kind:           symbolConstant,
+		Range:          Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(line)}},
+		Selection:      selection,
+		Implementation: implementationOnly && owner == "",
+	})
+	return true
+}
+
 // typedVariableContinues reports a declaration name list that continues on
 // the next physical line, such as "FirstValue," followed by "SecondValue:
 // Integer;". Delphi treats newlines as ordinary whitespace in declarations.
@@ -395,12 +446,16 @@ func positionAtOffset(text string, firstLine, offset int) Position {
 	return Position{Line: line, Character: len(prefix)}
 }
 
-func addParameters(document *Document, line string, lineNumber int, owner string) {
-	open, close := strings.Index(line, "("), strings.LastIndex(line, ")")
+func addParameters(document *Document, lines []string, lineNumber int, owner string) {
+	header := lines[lineNumber]
+	for index := lineNumber + 1; !strings.Contains(header, ")") && index < len(lines); index++ {
+		header += "\n" + lines[index]
+	}
+	open, close := strings.Index(header, "("), strings.LastIndex(header, ")")
 	if open < 0 || close <= open {
 		return
 	}
-	for _, group := range strings.Split(line[open+1:close], ";") {
+	for _, group := range strings.Split(header[open+1:close], ";") {
 		group = strings.TrimSpace(group)
 		parameterGroup := stripParameterModifier(group)
 		parts := strings.SplitN(parameterGroup, ":", 2)
@@ -412,9 +467,10 @@ func addParameters(document *Document, line string, lineNumber int, owner string
 			if name == "" {
 				continue
 			}
-			start := strings.Index(strings.ToLower(line), strings.ToLower(name))
-			selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(name)}}
-			document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: group, Owner: owner, Kind: symbolVariable, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(line)}}, Selection: selection})
+			start := strings.Index(strings.ToLower(header), strings.ToLower(name))
+			selectionStart := positionAtOffset(header, lineNumber, start)
+			selection := Range{Start: selectionStart, End: positionAtOffset(header, lineNumber, start+len(name))}
+			document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: group, Owner: owner, Kind: symbolVariable, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(lines[lineNumber])}}, Selection: selection})
 		}
 	}
 }

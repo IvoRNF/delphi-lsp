@@ -22,6 +22,44 @@ end;
 	}
 }
 
+func TestDefinitionPrefersMultilineParametersAndLocalConstantsOverGlobalSymbols(t *testing.T) {
+	local := Parse("file:///millenium_estampas.pas", `
+procedure Verifica_ExclusaoEstampa(Input: IwtsInput; Output: IwtsOutput;
+  DataPool: IwtsDataPool);
+const
+  Status = 1;
+begin
+  Output.SetFieldByName('DEPENDENTES', True);
+  Log(Status);
+end;
+`)
+	external := Parse("file:///external.pas", `
+unit External;
+interface
+function Output: IwtsOutput;
+function Status: Integer;
+implementation
+end.
+`)
+	server := NewServer(nil, nil)
+	server.indexReplace(local.URI, local)
+	server.indexReplace(external.URI, external)
+
+	for _, check := range []struct {
+		name     string
+		position Position
+		wantLine int
+	}{
+		{name: "Output", position: Position{Line: 6, Character: 4}, wantLine: 1},
+		{name: "Status", position: Position{Line: 7, Character: 6}, wantLine: 4},
+	} {
+		locations := server.definitionLocations(local, check.position, check.name)
+		if len(locations) != 1 || locations[0].URI != local.URI || locations[0].Range.Start.Line != check.wantLine {
+			t.Fatalf("definition for %s = %#v", check.name, locations)
+		}
+	}
+}
+
 func TestDefinitionResolvesContinuedCommaSeparatedRoutineLocals(t *testing.T) {
 	document := Parse("file:///comma-locals.pas", `
 procedure Run;

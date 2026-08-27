@@ -1,4 +1,5 @@
 **/*.exe
 **/*.vsix
 **/node_modules
+**/__history/*.*
 
