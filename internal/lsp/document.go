@@ -480,7 +480,12 @@ func addParameters(document *Document, lines []string, lineNumber int, owner str
 			start := strings.Index(strings.ToLower(header), strings.ToLower(name))
 			selectionStart := positionAtOffset(header, lineNumber, start)
 			selection := Range{Start: selectionStart, End: positionAtOffset(header, lineNumber, start+len(name))}
-			document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: group, Owner: owner, Kind: symbolVariable, Range: Range{Start: Position{Line: lineNumber}, End: Position{Line: lineNumber, Character: len(lines[lineNumber])}}, Selection: selection})
+			// The parameter name may be on a continuation line. DocumentSymbol
+			// requires selectionRange to be wholly contained by range, so the
+			// full routine header—not only its first physical line—is the
+			// parameter's enclosing range.
+			headerRange := Range{Start: Position{Line: lineNumber}, End: positionAtOffset(header, lineNumber, len(header))}
+			document.Symbols = append(document.Symbols, Symbol{Name: name, Detail: group, Owner: owner, Kind: symbolVariable, Range: headerRange, Selection: selection})
 		}
 	}
 }
