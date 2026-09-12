@@ -358,6 +358,7 @@ func Parse(uri, text string) *Document {
 	}
 	closeRoutine(len(lines) - 1)
 	closeType(len(lines) - 1)
+	document.Diagnostics = append(document.Diagnostics, semicolonDiagnostics(text)...)
 	if len(active) != 1 {
 		document.Diagnostics = append(document.Diagnostics, Diagnostic{Severity: 1, Source: "delphi-lsp", Message: "Unclosed compiler directive ({$IFDEF / {$IFNDEF)"})
 	}

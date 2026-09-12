@@ -1,9 +1,10 @@
 {
   "name": "delphi-lsp",
-  "displayName": "Delphi LSP",
+  "displayName": "GO Delphi LSP Server",
   "description": "Language support for Delphi and Object Pascal powered by the bundled delphi-lsp server.",
-  "version": "0.1.5",
-  "publisher": "delphi-lsp",
+  "version": "0.1.6",
+  "publisher": "ITLC-IVORNF",
+  "icon": "icon.png",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"

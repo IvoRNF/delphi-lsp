@@ -1,7 +1,7 @@
 # Delphi LSP for VS Code
 
 This extension provides Delphi/Object Pascal language features through the bundled `delphi-lsp` language server.
-
+The server is tested on windows and is written in go programming language, if you have problems please open a issue on https://github.com/IvoRNF/delphi-lsp or send me an email (ivoribeirodonascimento@gmail.com)
 ## Included features
 
 - Workspace and document symbols
