@@ -36,6 +36,15 @@ For `nvim-lspconfig`, use the same `cmd`, `filetypes`, and `root_dir` options.
 
 This is a practical starter server, not a Delphi compiler. It indexes declarations with a lightweight parser. The next natural extension is a full AST and compiler-compatible conditional-symbol configuration.
 
-The semicolon checker validates statement separators, not the complete Delphi
-grammar or declaration syntax. Conditional compilation currently checks the
+Diagnostics also validate unit headings, required sections and their order,
+duplicate sections, uses-clause placement and syntax, nested block closures,
+routine bodies in the interface section, and the final `end.`. Namespaced unit
+names, hint directives, and legacy `begin ... end.` initialization are supported.
+Classic local `var` declarations in routines are checked for missing semicolons,
+including the final declaration before `begin` and multiline declarations.
+These checks follow [Programs and Units (Delphi)](https://docwiki.embarcadero.com/RADStudio/Florence/en/Programs_and_Units_%28Delphi%29).
+
+The checkers validate statement separators and unit structure, not the complete
+Delphi grammar, declaration semantics, or interface/implementation signature
+matching. Conditional compilation currently checks the
 first branch without evaluating compiler symbols; assembly bodies are skipped.

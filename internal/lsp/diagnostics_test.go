@@ -38,7 +38,7 @@ func TestSemicolonDiagnostics(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := Parse("file:///Test.pas", tt.source)
+			d := &Document{Diagnostics: semicolonDiagnostics(tt.source)}
 			if len(d.Diagnostics) != tt.want {
 				t.Fatalf("got %d diagnostics, want %d: %+v", len(d.Diagnostics), tt.want, d.Diagnostics)
 			}
@@ -52,7 +52,7 @@ func TestSemicolonDiagnostics(t *testing.T) {
 }
 
 func TestSemicolonDiagnosticUTF16Range(t *testing.T) {
-	d := Parse("file:///Test.pas", "begin\r\n  Run('😀') // comment\r\n  Next;\r\nend.")
+	d := &Document{Diagnostics: semicolonDiagnostics("begin\r\n  Run('😀') // comment\r\n  Next;\r\nend.")}
 	if len(d.Diagnostics) != 1 {
 		t.Fatalf("diagnostics: %+v", d.Diagnostics)
 	}

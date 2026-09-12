@@ -32,7 +32,7 @@ func syntaxTokens(source string) []syntaxToken {
 		r := runes[i]
 		comment := false
 		switch {
-		case unicode.IsSpace(r):
+		case unicode.IsSpace(r) || r == '\ufeff' && i == 0:
 			i++
 		case r == '{' || r == '(' && i+1 < len(runes) && runes[i+1] == '*':
 			comment = true
@@ -103,7 +103,7 @@ func syntaxTokens(source string) []syntaxToken {
 			}
 			continue
 		}
-		if !unicode.IsSpace(r) && active[len(active)-1] {
+		if !unicode.IsSpace(r) && !(r == '\ufeff' && start == 0) && active[len(active)-1] {
 			tokens = append(tokens, syntaxToken{word, Range{Start: first, End: pos}})
 		}
 	}
