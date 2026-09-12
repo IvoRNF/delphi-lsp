@@ -42,6 +42,10 @@ routine bodies in the interface section, and the final `end.`. Namespaced unit
 names, hint directives, and legacy `begin ... end.` initialization are supported.
 Classic local `var` declarations in routines are checked for missing semicolons,
 including the final declaration before `begin` and multiline declarations.
+Diagnostics also report unclosed string literals and missing or incorrect
+semicolon separators between routine parameter groups. Empty strings, escaped
+apostrophes, Delphi multiline strings, comma-separated names within one parameter
+group, and procedural parameter types are supported.
 These checks follow [Programs and Units (Delphi)](https://docwiki.embarcadero.com/RADStudio/Florence/en/Programs_and_Units_%28Delphi%29).
 
 The checkers validate statement separators and unit structure, not the complete

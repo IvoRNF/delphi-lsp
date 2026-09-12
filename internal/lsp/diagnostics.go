@@ -13,8 +13,14 @@ type syntaxToken struct {
 // Tokenize independently of physical lines: Pascal statements and expressions
 // can span lines, and punctuation inside comments/strings is not syntax.
 func syntaxTokens(source string) []syntaxToken {
+	tokens, _ := scanSyntax(source)
+	return tokens
+}
+
+func scanSyntax(source string) ([]syntaxToken, []Diagnostic) {
 	runes := []rune(source)
 	var tokens []syntaxToken
+	var diagnostics []Diagnostic
 	pos := Position{}
 	advance := func(r rune) {
 		if r == '\n' {
@@ -31,6 +37,7 @@ func syntaxTokens(source string) []syntaxToken {
 		start, first := i, pos
 		r := runes[i]
 		comment := false
+		unclosedString := false
 		switch {
 		case unicode.IsSpace(r) || r == '\ufeff' && i == 0:
 			i++
@@ -57,14 +64,30 @@ func syntaxTokens(source string) []syntaxToken {
 				i++
 			}
 		case r == '\'':
+			unclosedString = true
+			// Delphi 12 multiline literals start with ''' and a newline.
+			multiline := i+3 < len(runes) && runes[i+1] == '\'' && runes[i+2] == '\'' && (runes[i+3] == '\r' || runes[i+3] == '\n')
+			if multiline {
+				i += 3
+				for i < len(runes) {
+					if i+2 < len(runes) && runes[i] == '\'' && runes[i+1] == '\'' && runes[i+2] == '\'' {
+						i += 3
+						unclosedString = false
+						break
+					}
+					i++
+				}
+				break
+			}
 			i++
-			for i < len(runes) {
+			for i < len(runes) && runes[i] != '\r' && runes[i] != '\n' {
 				if runes[i] == '\'' {
 					i++
 					if i < len(runes) && runes[i] == '\'' {
 						i++
 						continue
 					}
+					unclosedString = false
 					break
 				}
 				i++
@@ -84,6 +107,9 @@ func syntaxTokens(source string) []syntaxToken {
 			advance(consumed)
 		}
 		word := strings.ToLower(string(runes[start:i]))
+		if unclosedString && active[len(active)-1] {
+			diagnostics = append(diagnostics, Diagnostic{Range: Range{Start: first, End: pos}, Severity: 1, Source: "delphi-lsp", Message: "Unterminated string literal: expected closing apostrophe"})
+		}
 		if comment {
 			directive := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(word, "{"), "(*"), "}"), "*)"))
 			fields := strings.Fields(directive)
@@ -107,7 +133,7 @@ func syntaxTokens(source string) []syntaxToken {
 			tokens = append(tokens, syntaxToken{word, Range{Start: first, End: pos}})
 		}
 	}
-	return tokens
+	return tokens, diagnostics
 }
 
 type statementParser struct {
