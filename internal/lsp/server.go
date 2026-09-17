@@ -285,6 +285,10 @@ func (s *Server) completions(uri string, position Position) []CompletionItem {
 		if usesClauseAt(current.Lines, position) {
 			return s.unitCompletions(unitPrefixAt(current.Lines, position))
 		}
+		// Member completion needs the interface declaration before it can
+		// resolve a receiver such as "ConfigSrv: IConfigSrv". Load direct
+		// imports on demand instead of waiting for the background indexer.
+		s.ensureUsedUnits(current)
 		prefix = strings.ToLower(prefixAt(current.Lines, position))
 		if typeName := s.memberCompletionType(current, position); typeName != "" {
 			return s.memberCompletions(typeName, prefix)
@@ -613,7 +617,7 @@ func (s *Server) indexRoots() {
 			if ext != ".pas" && ext != ".dpr" && ext != ".dpk" {
 				return nil
 			}
-			s.enqueue("file:///" + filepath.ToSlash(p))
+			s.enqueue(fileURI(p))
 			return nil
 		})
 	}
@@ -763,8 +767,70 @@ func (s *Server) document(uri string) *Document {
 
 func (s *Server) unitURI(name string) string {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.units[strings.ToLower(name)]
+	uri := s.units[strings.ToLower(name)]
+	s.mu.RUnlock()
+	if uri != "" {
+		return uri
+	}
+
+	// Unit lookup normally becomes available while the background indexer
+	// walks a search path. Probe the configured roots by Delphi's conventional
+	// <UnitName>.pas filename as a synchronous fallback so the first request is
+	// useful too.
+	return s.loadUnitFromRoots(name)
+}
+
+// ensureUsedUnits makes public declarations in direct imports available to
+// definition, hover and member-completion requests. Repeated calls are cheap
+// once a unit has been indexed.
+func (s *Server) ensureUsedUnits(document *Document) {
+	if document == nil {
+		return
+	}
+	for _, unit := range document.Uses {
+		if uri := s.unitURI(unit.Name); uri != "" {
+			s.ensureParsed(uri)
+		}
+	}
+}
+
+// loadUnitFromRoots loads a used unit directly from a configured source root
+// when the asynchronous workspace walk has not indexed it yet. The file's
+// header remains authoritative: a same-named file declaring another unit is
+// ignored and the remaining roots are tried.
+func (s *Server) loadUnitFromRoots(name string) string {
+	key := strings.ToLower(name)
+	s.mu.RLock()
+	if uri := s.units[key]; uri != "" {
+		s.mu.RUnlock()
+		return uri
+	}
+	roots := make([]string, 0, len(s.roots))
+	for root := range s.roots {
+		roots = append(roots, root)
+	}
+	s.mu.RUnlock()
+	sort.Strings(roots)
+
+	for _, root := range roots {
+		path := uriPath(root)
+		if path == "" {
+			continue
+		}
+		candidate := filepath.Join(path, name+".pas")
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		s.indexFile(fileURI(candidate))
+		s.mu.RLock()
+		uri := s.units[key]
+		s.mu.RUnlock()
+		if uri != "" {
+			return uri
+		}
+	}
+	return ""
 }
 
 // symbolRefs returns all indexed occurrences of a symbol name. The slice is
@@ -802,4 +868,8 @@ func uriPath(raw string) string {
 		p = p[1:]
 	}
 	return filepath.FromSlash(p)
+}
+
+func fileURI(path string) string {
+	return "file:///" + filepath.ToSlash(path)
 }

@@ -2,9 +2,11 @@ package lsp
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -38,6 +40,11 @@ func LoadConfig(name string) (Config, []string, error) {
 	if c.Project != "" {
 		if stringsEqualFold(filepath.Ext(c.Project), ".dproj") {
 			roots = append(roots, filepath.Dir(c.Project))
+			// A Delphi project is the source of truth for its unit search
+			// path. Honouring it means a project configured by itself can
+			// resolve units outside the project directory, without requiring
+			// the user to duplicate DCC_UnitSearchPath in the LSP settings.
+			roots = append(roots, projectUnitSearchPaths(c.Project)...)
 		} else {
 			return c, nil, fmt.Errorf("project must be a .dproj file: %s", c.Project)
 		}
@@ -52,6 +59,46 @@ func LoadConfig(name string) (Config, []string, error) {
 		roots = append(roots, resolve(p))
 	}
 	return c, uniqueExistingDirs(roots), nil
+}
+
+// projectUnitSearchPaths extracts every DCC_UnitSearchPath value from a
+// Delphi MSBuild project. Projects commonly keep different paths in Debug
+// and Release property groups; indexing their existing union makes language
+// features available regardless of the active IDE configuration.
+func projectUnitSearchPaths(project string) []string {
+	file, err := os.Open(project)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	decoder := xml.NewDecoder(file)
+	base := filepath.Dir(project)
+	var paths []string
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return paths
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || !strings.EqualFold(start.Name.Local, "DCC_UnitSearchPath") {
+			continue
+		}
+		var value string
+		if decoder.DecodeElement(&value, &start) != nil {
+			continue
+		}
+		for _, path := range strings.Split(value, ";") {
+			path = strings.TrimSpace(path)
+			if path == "" {
+				continue
+			}
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(base, path)
+			}
+			paths = append(paths, filepath.Clean(path))
+		}
+	}
 }
 
 func stringsEqualFold(a, b string) bool {

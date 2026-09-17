@@ -73,10 +73,11 @@ func Parse(uri, text string) *Document {
 	// rather than null (which some clients, including Neovim, cannot handle).
 	lines := strings.Split(text, "\n")
 	document := &Document{URI: uri, Text: text, Lines: lines, Diagnostics: []Diagnostic{}}
-	active := []bool{true}
+	declarationText, conditionalDepth := declarationSource(text)
 	inVarSection, inConstSection, routineBody := false, false, false
 	inTypeSection := false
 	inImplementation, inUses := false, false
+	inInterface := false
 	currentRoutine, currentTypeIndex, routineDepth := -1, -1, 0
 	currentType := ""
 	routineStack := []routineContext{}
@@ -134,31 +135,20 @@ func Parse(uri, text string) *Document {
 		return false
 	}
 
-	for lineNumber, line := range lines {
+	for lineNumber, line := range strings.Split(declarationText, "\n") {
 		trimmed := strings.TrimSpace(line)
-		upper := strings.ToUpper(trimmed)
-		if strings.HasPrefix(upper, "{$IFDEF ") || strings.HasPrefix(upper, "{$IFNDEF ") {
-			active = append(active, active[len(active)-1])
-			continue
-		}
-		if strings.HasPrefix(upper, "{$ELSE") && len(active) > 1 {
-			active[len(active)-1] = !active[len(active)-2] && active[len(active)-1]
-			continue
-		}
-		if strings.HasPrefix(upper, "{$ENDIF") && len(active) > 1 {
-			active = active[:len(active)-1]
-			continue
-		}
-		if !active[len(active)-1] {
-			continue
-		}
 		if match := unitHeader.FindStringSubmatch(line); match != nil {
 			start := strings.Index(strings.ToLower(line), strings.ToLower(match[1]))
 			selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(match[1])}}
 			document.Symbols = append(document.Symbols, Symbol{Name: match[1], Detail: "unit " + match[1], Kind: symbolModule, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection})
 			continue
 		}
+		if strings.EqualFold(trimmed, "interface") {
+			inInterface = true
+			continue
+		}
 		if strings.EqualFold(trimmed, "implementation") {
+			inInterface = false
 			closeRoutine(lineNumber - 1)
 			inImplementation, inUses, inTypeSection, inVarSection, inConstSection = true, false, false, false, false
 			continue
@@ -201,6 +191,7 @@ func Parse(uri, text string) *Document {
 				selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(match[1])}}
 				document.Symbols = append(document.Symbols, Symbol{Name: match[1], Detail: match[1] + " = " + strings.ToLower(match[2]), Documentation: summaryBefore(lines, lineNumber), Kind: symbolClass, Parents: typeParents(match[3]), Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}})
 				currentType, currentTypeIndex, inVarSection = match[1], len(document.Symbols)-1, false
+				document.Symbols[currentTypeIndex].Implementation = inImplementation
 				continue
 			}
 		}
@@ -209,6 +200,7 @@ func Parse(uri, text string) *Document {
 				start := strings.Index(strings.ToLower(line), strings.ToLower(match[1]))
 				selection := Range{Start: Position{Line: lineNumber, Character: start}, End: Position{Line: lineNumber, Character: start + len(match[1])}}
 				document.Symbols = append(document.Symbols, Symbol{Name: match[1], Detail: strings.TrimSpace(line), Documentation: summaryBefore(lines, lineNumber), Kind: symbolClass, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection})
+				document.Symbols[len(document.Symbols)-1].Implementation = inImplementation
 				continue
 			}
 		}
@@ -278,7 +270,7 @@ func Parse(uri, text string) *Document {
 			// Declarations in a unit implementation section are unit-private.
 			// Members already carry an owner and are not included in ordinary
 			// cross-unit name lookup, but standalone routines must be marked too.
-			implementationOnly := inImplementation && (kind == symbolFunction || (kind == symbolVariable && owner == ""))
+			implementationOnly := inImplementation && (kind == symbolFunction || ((kind == symbolVariable || kind == symbolConstant || kind == symbolClass) && owner == ""))
 			symbol := Symbol{Name: name, Detail: strings.TrimSpace(match[1] + " " + rawName + match[3]), Documentation: summaryBefore(lines, lineNumber), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}, Implementation: implementationOnly}
 			document.Symbols = append(document.Symbols, symbol)
 			if word == "type" && (strings.Contains(strings.ToLower(match[3]), "= class") || strings.Contains(strings.ToLower(match[3]), "= record")) {
@@ -292,6 +284,12 @@ func Parse(uri, text string) *Document {
 				addParameters(document, lines, lineNumber, name)
 				if word == "function" {
 					addFunctionResult(document, match[3], lineNumber, selection, name)
+				}
+				// Interface signatures have no body or nested declarations. End
+				// their scope here so the next public routine/type is not treated
+				// as a local of this one (LogText followed by LogTextFmt).
+				if inInterface {
+					closeRoutine(lineNumber)
 				}
 				inVarSection, inConstSection = false, false
 			} else if word == "var" {
@@ -364,11 +362,86 @@ func Parse(uri, text string) *Document {
 	_, lexicalDiagnostics := scanSyntax(text)
 	document.Diagnostics = append(document.Diagnostics, lexicalDiagnostics...)
 	document.Diagnostics = append(document.Diagnostics, parameterDiagnostics(text)...)
-	if len(active) != 1 {
+	if conditionalDepth != 1 {
 		document.Diagnostics = append(document.Diagnostics, Diagnostic{Severity: 1, Source: "delphi-lsp", Message: "Unclosed compiler directive ({$IFDEF / {$IFNDEF)"})
 	}
 	sort.SliceStable(document.Symbols, func(i, j int) bool { return document.Symbols[i].Name < document.Symbols[j].Name })
 	return document
+}
+
+// declarationSource blanks comments, directives and inactive branches while
+// preserving byte offsets and newlines. A directive is not a whole line:
+// {$IFDEF VER180},Variants{$ENDIF}; must retain the uses-clause terminator.
+// Like scanSyntax, select the first branch without evaluating compiler symbols.
+func declarationSource(source string) (string, int) {
+	out := []byte(source)
+	active := []bool{true}
+	blank := func(start, end int) {
+		for i := start; i < end; i++ {
+			if out[i] != '\r' && out[i] != '\n' {
+				out[i] = ' '
+			}
+		}
+	}
+	for i := 0; i < len(source); {
+		start := i
+		switch {
+		case source[i] == '\'':
+			// Directives inside literals (including interface GUIDs) are data.
+			i++
+			for i < len(source) && source[i] != '\r' && source[i] != '\n' {
+				if source[i] == '\'' {
+					i++
+					if i < len(source) && source[i] == '\'' {
+						i++
+						continue
+					}
+					break
+				}
+				i++
+			}
+		case strings.HasPrefix(source[i:], "//"):
+			for i < len(source) && source[i] != '\n' {
+				i++
+			}
+			blank(start, i)
+		case source[i] == '{' || strings.HasPrefix(source[i:], "(*"):
+			open, close := 1, "}"
+			if source[i] == '(' {
+				open, close = 2, "*)"
+			}
+			bodyStart := i + open
+			end := strings.Index(source[bodyStart:], close)
+			bodyEnd := len(source)
+			i = len(source)
+			if end >= 0 {
+				bodyEnd = bodyStart + end
+				i = bodyEnd + len(close)
+			}
+			fields := strings.Fields(strings.ToUpper(source[bodyStart:bodyEnd]))
+			if len(fields) > 0 {
+				switch fields[0] {
+				case "$IFDEF", "$IFNDEF", "$IF", "$IFOPT":
+					active = append(active, active[len(active)-1])
+				case "$ELSE", "$ELSEIF":
+					if len(active) > 1 {
+						active[len(active)-1] = false
+					}
+				case "$ENDIF", "$IFEND":
+					if len(active) > 1 {
+						active = active[:len(active)-1]
+					}
+				}
+			}
+			blank(start, i)
+		default:
+			i++
+		}
+		if !active[len(active)-1] {
+			blank(start, i)
+		}
+	}
+	return string(out), len(active)
 }
 
 func typeParents(raw string) []string {

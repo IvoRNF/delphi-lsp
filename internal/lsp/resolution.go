@@ -8,6 +8,10 @@ import (
 )
 
 func (s *Server) definitionLocations(current *Document, position Position, name string) []Location {
+	// Resolve imports before looking up a symbol or an interface member. The
+	// workspace index is intentionally asynchronous, but navigation must not
+	// depend on whether its worker has already reached a used unit.
+	s.ensureUsedUnits(current)
 	if unit := current.useAt(position); unit != nil {
 		if location := s.unitLocation(unit.Name); location != nil {
 			return []Location{*location}
