@@ -3,7 +3,11 @@ package lsp
 // Check classic local var sections separately from executable statements.
 // A declaration needs its terminator even immediately before begin.
 func localVariableDiagnostics(source string) []Diagnostic {
-	p := unitParser{tokens: syntaxTokens(source)}
+	return localVariableTokenDiagnostics(syntaxTokens(source))
+}
+
+func localVariableTokenDiagnostics(tokens []syntaxToken) []Diagnostic {
+	p := unitParser{tokens: tokens}
 	routine := false
 	inInterface := false
 	for p.word(0) != "" {

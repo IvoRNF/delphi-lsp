@@ -32,6 +32,27 @@ vim.lsp.enable('delphi_lsp')
 
 For `nvim-lspconfig`, use the same `cmd`, `filetypes`, and `root_dir` options.
 
+## Performance checks
+
+Diagnostic checks share one token stream per parse. Background indexing uses
+up to four workers, bounded by Go's CPU parallelism setting, and concurrent
+requests for the same file share its in-progress load. Symbol index updates
+remove each distinct name once, avoiding repeated scans for overloaded names.
+
+Run the synthetic benchmarks with `go test ./internal/lsp -run '^$' -bench . -benchmem`.
+To measure a private Pascal unit without copying it into this repository, use
+PowerShell:
+
+```powershell
+$env:DELPHI_LSP_BENCH_FILE = 'Z:\millenium\Eventos\ExecEventoB.pas'
+go test ./internal/lsp -run '^TestExternalUnitSnapshot$' -v
+go test ./internal/lsp -run '^$' -bench '^BenchmarkParseExternalUnit$' -benchmem -benchtime=3x -count=3
+```
+
+The snapshot prints a hash of the parsed document to compare behavior across
+revisions. Benchmarks measure parsing and allocations, excluding file reads;
+allocated bytes are cumulative per parse, not peak resident memory.
+
 ## Scope
 
 This is a practical starter server, not a Delphi compiler. It indexes declarations with a lightweight parser. The next natural extension is a full AST and compiler-compatible conditional-symbol configuration.

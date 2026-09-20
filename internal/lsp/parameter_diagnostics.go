@@ -1,7 +1,11 @@
 package lsp
 
 func parameterDiagnostics(source string) []Diagnostic {
-	p := unitParser{tokens: syntaxTokens(source)}
+	return parameterTokenDiagnostics(syntaxTokens(source))
+}
+
+func parameterTokenDiagnostics(tokens []syntaxToken) []Diagnostic {
+	p := unitParser{tokens: tokens}
 	for p.word(0) != "" {
 		if !syntaxOneOf(p.word(0), "procedure", "function", "constructor", "destructor", "operator") {
 			p.i++

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -57,7 +58,9 @@ type Server struct {
 	// demand instead of waiting for the whole workspace.
 	pendingQueue []string
 	pendingSet   map[string]bool
-	active       int
+	// loading coalesces foreground and background requests for the same file.
+	loading map[string]chan struct{}
+	active  int
 }
 
 func NewServer(in io.Reader, out io.Writer) *Server {
@@ -626,7 +629,7 @@ func (s *Server) indexRoots() {
 
 func (s *Server) enqueue(uri string) {
 	s.mu.Lock()
-	if !s.pendingSet[uri] {
+	if !s.pendingSet[uri] && s.docs[uri] == nil && s.loading[uri] == nil {
 		s.pendingSet[uri] = true
 		s.pendingQueue = append(s.pendingQueue, uri)
 	}
@@ -635,11 +638,12 @@ func (s *Server) enqueue(uri string) {
 
 func (s *Server) spawnWorkers() {
 	s.mu.Lock()
-	if s.active >= maxIndexWorkers || len(s.pendingQueue) == 0 {
+	limit := min(maxIndexWorkers, runtime.GOMAXPROCS(0))
+	if s.active >= limit || len(s.pendingQueue) == 0 {
 		s.mu.Unlock()
 		return
 	}
-	want := maxIndexWorkers - s.active
+	want := min(limit-s.active, len(s.pendingQueue))
 	s.active += want
 	s.mu.Unlock()
 	for i := 0; i < want; i++ {
@@ -648,21 +652,19 @@ func (s *Server) spawnWorkers() {
 }
 
 func (s *Server) indexWorker() {
-	defer func() {
-		s.mu.Lock()
-		s.active--
-		s.mu.Unlock()
-	}()
 	for {
 		s.mu.Lock()
 		if len(s.pendingQueue) == 0 {
+			// Retire atomically with checking the queue so newly queued work
+			// cannot be stranded behind a worker that is about to exit.
+			s.active--
 			s.mu.Unlock()
 			return
 		}
 		// Pop under the lock so two workers can never parse the same file.
 		uri := s.pendingQueue[0]
+		s.pendingQueue[0] = ""
 		s.pendingQueue = s.pendingQueue[1:]
-		delete(s.pendingSet, uri)
 		s.mu.Unlock()
 		s.indexFile(uri)
 	}
@@ -671,6 +673,31 @@ func (s *Server) indexWorker() {
 // indexFile parses one file (once, from disk) and publishes its unit name and
 // symbols to the index.
 func (s *Server) indexFile(uri string) {
+	s.mu.Lock()
+	if s.docs[uri] != nil {
+		delete(s.pendingSet, uri)
+		s.mu.Unlock()
+		return
+	}
+	if done := s.loading[uri]; done != nil {
+		s.mu.Unlock()
+		<-done
+		return
+	}
+	if s.loading == nil {
+		s.loading = make(map[string]chan struct{})
+	}
+	done := make(chan struct{})
+	s.loading[uri] = done
+	delete(s.pendingSet, uri)
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.loading, uri)
+		close(done)
+		s.mu.Unlock()
+	}()
+
 	path := uriPath(uri)
 	if path == "" {
 		return
@@ -713,11 +740,15 @@ func (s *Server) indexDoc(doc *Document) {
 func (s *Server) insertIndexed(doc *Document) {
 	s.docs[doc.URI] = doc
 	names := s.docNames[doc.URI]
+	seen := make(map[string]bool)
 	for i := range doc.Symbols {
 		sym := doc.Symbols[i]
 		key := strings.ToLower(sym.Name)
 		s.byName[key] = append(s.byName[key], symbolRef{uri: doc.URI, symbol: sym})
-		names = append(names, key)
+		if !seen[key] {
+			seen[key] = true
+			names = append(names, key)
+		}
 	}
 	s.docNames[doc.URI] = names
 }
@@ -752,8 +783,9 @@ func (s *Server) ensureParsed(uri string) {
 	s.mu.RLock()
 	_, done := s.docs[uri]
 	queued := s.pendingSet[uri]
+	loading := s.loading[uri] != nil
 	s.mu.RUnlock()
-	if done || !queued {
+	if done || (!queued && !loading) {
 		return
 	}
 	s.indexFile(uri)

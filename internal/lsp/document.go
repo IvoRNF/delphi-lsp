@@ -356,12 +356,13 @@ func Parse(uri, text string) *Document {
 	}
 	closeRoutine(len(lines) - 1)
 	closeType(len(lines) - 1)
-	document.Diagnostics = append(document.Diagnostics, semicolonDiagnostics(text)...)
-	document.Diagnostics = append(document.Diagnostics, unitDiagnostics(uri, text)...)
-	document.Diagnostics = append(document.Diagnostics, localVariableDiagnostics(text)...)
-	_, lexicalDiagnostics := scanSyntax(text)
+	// Diagnostic passes only read tokens, so tokenize once per document.
+	tokens, lexicalDiagnostics := scanSyntax(text)
+	document.Diagnostics = append(document.Diagnostics, semicolonTokenDiagnostics(tokens)...)
+	document.Diagnostics = append(document.Diagnostics, unitTokenDiagnostics(uri, tokens)...)
+	document.Diagnostics = append(document.Diagnostics, localVariableTokenDiagnostics(tokens)...)
 	document.Diagnostics = append(document.Diagnostics, lexicalDiagnostics...)
-	document.Diagnostics = append(document.Diagnostics, parameterDiagnostics(text)...)
+	document.Diagnostics = append(document.Diagnostics, parameterTokenDiagnostics(tokens)...)
 	if conditionalDepth != 1 {
 		document.Diagnostics = append(document.Diagnostics, Diagnostic{Severity: 1, Source: "delphi-lsp", Message: "Unclosed compiler directive ({$IFDEF / {$IFNDEF)"})
 	}

@@ -143,7 +143,11 @@ type statementParser struct {
 }
 
 func semicolonDiagnostics(source string) []Diagnostic {
-	p := statementParser{tokens: syntaxTokens(source)}
+	return semicolonTokenDiagnostics(syntaxTokens(source))
+}
+
+func semicolonTokenDiagnostics(tokens []syntaxToken) []Diagnostic {
+	p := statementParser{tokens: tokens}
 	// Declaration parsing stays with the symbol indexer. Inspect executable
 	// blocks, including program bodies and unit initialization/finalization.
 	for p.i < len(p.tokens) {

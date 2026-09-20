@@ -9,7 +9,10 @@ import (
 // as unit sections. This pass deliberately leaves declaration semantics to a
 // future compiler-aware parser.
 func unitDiagnostics(uri, source string) []Diagnostic {
-	tokens := syntaxTokens(source)
+	return unitTokenDiagnostics(uri, syntaxTokens(source))
+}
+
+func unitTokenDiagnostics(uri string, tokens []syntaxToken) []Diagnostic {
 	if len(tokens) > 0 && syntaxOneOf(tokens[0].text, "program", "library", "package") {
 		return nil
 	}
