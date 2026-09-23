@@ -181,7 +181,11 @@ func Parse(uri, text string) *Document {
 			continue
 		}
 		if currentRoutine < 0 && currentType == "" && strings.EqualFold(trimmed, "const") {
+			// Leaving inVarSection set would send the first constant of the new
+			// block to the var-section branch below, where it fails the typed
+			// variable pattern, is dropped and silently closes the var section.
 			inConstSection = true
+			inVarSection = false
 			inTypeSection = false
 			continue
 		}

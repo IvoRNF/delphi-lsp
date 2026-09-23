@@ -468,3 +468,47 @@ end;
 		t.Fatalf("var parameter missing from completion = %#v", mutableItems)
 	}
 }
+
+// A const block that follows a var block used to leave the var section open, so
+// the first constant of the block was consumed by the var branch, dropped and
+// never indexed. Definition and hover then failed silently for it, which is what
+// happened to LAcaoDivergenciaCancelaPedido in millenium_prefaturamento_t.pas.
+func TestDefinitionResolvesFirstConstantOfConstSectionAfterVarSection(t *testing.T) {
+	document := Parse("file:///millenium_prefaturamento_t.pas", `unit millenium_prefaturamento_t;
+interface
+implementation
+var
+  FLock: TCriticalSection;
+const
+  LAcaoDivergenciaCancelaPedido = 0;
+  LAcaoDivergenciaCancelaProdutos = 1;
+procedure AcoesDivergencia;
+var
+  Acao: Integer;
+begin
+  if Acao = LAcaoDivergenciaCancelaPedido then
+    Acao := LAcaoDivergenciaCancelaProdutos;
+end;
+end.
+`)
+	server := NewServer(nil, nil)
+	server.indexReplace(document.URI, document)
+
+	for _, check := range []struct {
+		name     string
+		position Position
+		wantLine int
+		detail   string
+	}{
+		{name: "LAcaoDivergenciaCancelaPedido", position: Position{Line: 12, Character: len("  if Acao = ")}, wantLine: 6, detail: "LAcaoDivergenciaCancelaPedido = 0;"},
+		{name: "LAcaoDivergenciaCancelaProdutos", position: Position{Line: 13, Character: len("    Acao := ")}, wantLine: 7, detail: "LAcaoDivergenciaCancelaProdutos = 1;"},
+	} {
+		locations := server.definitionLocations(document, check.position, check.name)
+		if len(locations) != 1 || locations[0].URI != document.URI || locations[0].Range.Start.Line != check.wantLine {
+			t.Fatalf("definition for %s = %#v", check.name, locations)
+		}
+		if symbol := server.symbolAtLocation(document, locations[0]); symbol == nil || symbol.Detail != check.detail {
+			t.Fatalf("hover target for %s = %#v", check.name, symbol)
+		}
+	}
+}
