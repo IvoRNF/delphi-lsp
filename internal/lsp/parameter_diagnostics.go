@@ -40,7 +40,7 @@ func (p *unitParser) parameterSeparator(message string) {
 	p.diagnostics = append(p.diagnostics, Diagnostic{Range: span, Severity: 1, Source: "delphi-lsp", Message: message})
 }
 
-func (p *unitParser) parameters() {
+func (p *unitParser) parameters() (names []syntaxToken) {
 	p.i++
 	for p.word(0) != "" && p.word(0) != ")" {
 		start := p.i
@@ -54,12 +54,14 @@ func (p *unitParser) parameters() {
 		if !syntaxIdentifier(p.word(0)) {
 			return
 		}
+		names = append(names, p.tokens[p.i])
 		p.i++
 		for p.word(0) == "," {
 			p.i++
 			if !syntaxIdentifier(p.word(0)) {
 				return
 			}
+			names = append(names, p.tokens[p.i])
 			p.i++
 		}
 		if p.word(0) == ":" {
@@ -106,4 +108,5 @@ func (p *unitParser) parameters() {
 	if p.word(0) == ")" {
 		p.i++
 	}
+	return
 }

@@ -45,3 +45,19 @@ func TestUnitDiagnosticsPublishedAndCleared(t *testing.T) {
 		t.Fatalf("expected error publication followed by clearing: %s", text)
 	}
 }
+
+func TestUnusedParameterWarningPublishedAndCleared(t *testing.T) {
+	open := `{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///test.pas","languageId":"pascal","version":1,"text":"unit Test; interface implementation procedure P(A: Integer); begin end; end."}}}`
+	change := `{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///test.pas","version":2},"contentChanges":[{"text":"unit Test; interface implementation procedure P(A: Integer); begin WriteLn(A); end; end."}]}}`
+	input := fmt.Sprintf("Content-Length: %d\r\n\r\n%sContent-Length: %d\r\n\r\n%s", len(open), open, len(change), change)
+	var output bytes.Buffer
+	if err := NewServer(strings.NewReader(input), &output).Serve(); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	warningAt := strings.Index(text, "Unused parameter 'a'")
+	clearAt := strings.LastIndex(text, `"diagnostics":[]`)
+	if warningAt < 0 || clearAt <= warningAt || !strings.Contains(text, `"severity":2`) || !strings.Contains(text, `"tags":[1]`) {
+		t.Fatalf("expected unused warning followed by clearing: %s", text)
+	}
+}

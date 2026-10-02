@@ -17,6 +17,7 @@ type Diagnostic struct {
 	Severity int    `json:"severity,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Message  string `json:"message"`
+	Tags     []int  `json:"tags,omitempty"`
 }
 type TextDocumentIdentifier struct {
 	URI string `json:"uri"`

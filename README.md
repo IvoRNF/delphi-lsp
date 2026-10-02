@@ -8,6 +8,10 @@ A small, dependency-free Delphi/Object Pascal language server written in Go. It 
 - Project indexing for `.pas`, `.dpr`, and `.dpk` files
 - Directive-aware parsing for `{$IFDEF}`, `{$IFNDEF}`, `{$ELSE}`, and `{$ENDIF}`
 - Document/workspace symbols, completion, hover, definition, references, and diagnostics
+- Warnings for unused routine parameters, highlighted at their declarations and
+  tagged as unnecessary for editor dimming. Reads, assignments, and passing a
+  parameter to another routine count as use. Nested routines respect parameter
+  and local-variable scope; declarations without bodies are excluded.
 - Error diagnostics for missing `;` separators in executable Pascal statements,
   including multiline commands and nested control-flow blocks. Comments and
   strings are ignored, and optional separators before `end` / `until` and
@@ -73,3 +77,6 @@ The checkers validate statement separators and unit structure, not the complete
 Delphi grammar, declaration semantics, or interface/implementation signature
 matching. Conditional compilation currently checks the
 first branch without evaluating compiler symbols; assembly bodies are skipped.
+Unused-parameter warnings follow the same conditional-compilation behavior.
+Assembly and implicit `inherited` calls suppress warnings because they may use
+parameters without explicitly naming them. Incomplete routine bodies are skipped.
