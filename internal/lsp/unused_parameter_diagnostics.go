@@ -8,8 +8,9 @@ type parameterUse struct {
 }
 
 type parameterScope struct {
-	parent   *parameterScope
-	bindings map[string]*parameterUse // A nil binding shadows an outer parameter.
+	parent    *parameterScope
+	bindings  map[string]*parameterUse // A nil binding shadows an outer declaration.
+	variables []*parameterUse
 }
 
 func newParameterScope(parent *parameterScope) *parameterScope {
@@ -42,13 +43,32 @@ func (s *parameterScope) useAll() {
 
 type unusedParameterParser struct {
 	unitParser
-	warnings []Diagnostic
+	warnings            []Diagnostic
+	incompleteVariables int
 }
 
-func unusedParameterTokenDiagnostics(tokens []syntaxToken) []Diagnostic {
+func unusedDeclarationTokenDiagnostics(tokens []syntaxToken) []Diagnostic {
 	p := unusedParameterParser{unitParser: unitParser{tokens: tokens}}
 	p.declarations(nil, false)
 	return p.warnings
+}
+
+func unusedParameterTokenDiagnostics(tokens []syntaxToken) []Diagnostic {
+	return unusedDiagnosticsByPrefix(unusedDeclarationTokenDiagnostics(tokens), "Unused parameter '")
+}
+
+func unusedLocalVariableTokenDiagnostics(tokens []syntaxToken) []Diagnostic {
+	return unusedDiagnosticsByPrefix(unusedDeclarationTokenDiagnostics(tokens), "Unused local variable '")
+}
+
+func unusedDiagnosticsByPrefix(diagnostics []Diagnostic, prefix string) []Diagnostic {
+	var result []Diagnostic
+	for _, diagnostic := range diagnostics {
+		if strings.HasPrefix(diagnostic.Message, prefix) {
+			result = append(result, diagnostic)
+		}
+	}
+	return result
 }
 
 // Parse declarations separately from bodies: prototypes, procedural types and
@@ -83,15 +103,10 @@ func (p *unusedParameterParser) declarations(scope *parameterScope, routine bool
 			p.routine(scope, section != "interface")
 		default:
 			if declarationKind != "" && syntaxIdentifier(p.word(0)) {
-				// Local declarations hide parameters of enclosing routines.
-				if scope != nil {
-					scope.bindings[parameterName(p.word(0))] = nil
-					for p.word(1) == "," && syntaxIdentifier(p.word(2)) {
-						p.i += 2
-						scope.bindings[parameterName(p.word(0))] = nil
-					}
+				p.declarationNames(scope, declarationKind == "var")
+				if !p.skipDeclaration(scope) && declarationKind == "var" {
+					p.incompleteVariables++
 				}
-				p.skipDeclaration(scope)
 			} else {
 				p.i++
 			}
@@ -100,7 +115,26 @@ func (p *unusedParameterParser) declarations(scope *parameterScope, routine bool
 	return false
 }
 
-func (p *unusedParameterParser) skipDeclaration(scope *parameterScope) {
+func (p *unusedParameterParser) declarationNames(scope *parameterScope, trackVariable bool) {
+	for {
+		token := p.tokens[p.i]
+		if scope != nil {
+			binding := (*parameterUse)(nil)
+			if trackVariable {
+				binding = &parameterUse{token: token}
+				scope.variables = append(scope.variables, binding)
+			}
+			scope.bindings[parameterName(token.text)] = binding
+		}
+		p.i++
+		if p.word(0) != "," || !syntaxIdentifier(p.word(1)) {
+			return
+		}
+		p.i++
+	}
+}
+
+func (p *unusedParameterParser) skipDeclaration(scope *parameterScope) bool {
 	initializer := false
 	for !syntaxOneOf(p.word(0), "", ";", "begin", "end", "implementation") {
 		switch p.word(0) {
@@ -124,7 +158,9 @@ func (p *unusedParameterParser) skipDeclaration(scope *parameterScope) {
 	}
 	if p.word(0) == ";" {
 		p.i++
+		return true
 	}
+	return false
 }
 
 func (p *unusedParameterParser) routine(parent *parameterScope, implementation bool) {
@@ -148,6 +184,7 @@ func (p *unusedParameterParser) routine(parent *parameterScope, implementation b
 	}
 	var parameters []*parameterUse
 	errorsBefore := len(p.diagnostics)
+	incompleteVariablesBefore := p.incompleteVariables
 	if p.word(0) == "(" {
 		for _, token := range p.parameters() {
 			parameter := &parameterUse{token: token}
@@ -170,16 +207,28 @@ func (p *unusedParameterParser) routine(parent *parameterScope, implementation b
 	}
 	warningsBefore := len(p.warnings)
 	complete := p.declarations(scope, true)
-	if !complete || len(p.diagnostics) != errorsBefore {
+	if !complete || len(p.diagnostics) != errorsBefore || p.incompleteVariables != incompleteVariablesBefore {
 		// Do not produce speculative warnings while the user is typing a body.
 		p.warnings = p.warnings[:warningsBefore]
 		return
 	}
+	p.reportUnusedVariables(scope)
 	for _, parameter := range parameters {
 		if !parameter.used {
 			p.warnings = append(p.warnings, Diagnostic{
 				Range: parameter.token.span, Severity: 2, Source: "delphi-lsp",
 				Message: "Unused parameter '" + parameter.token.text + "'", Tags: []int{1},
+			})
+		}
+	}
+}
+
+func (p *unusedParameterParser) reportUnusedVariables(scope *parameterScope) {
+	for _, variable := range scope.variables {
+		if !variable.used {
+			p.warnings = append(p.warnings, Diagnostic{
+				Range: variable.token.span, Severity: 2, Source: "delphi-lsp",
+				Message: "Unused local variable '" + variable.token.text + "'", Tags: []int{1},
 			})
 		}
 	}
@@ -212,17 +261,22 @@ func (p *unusedParameterParser) body(scope *parameterScope) bool {
 		case "implementation", "initialization", "finalization":
 			return false
 		case "begin", "try", "case", "asm":
-			if !p.body(newParameterScope(scope)) {
+			child := newParameterScope(scope)
+			if !p.body(child) {
 				return false
 			}
+			p.reportUnusedVariables(child)
 		case "procedure", "function":
 			p.routine(scope, true)
 		case "var", "const":
+			trackVariable := p.word(0) == "var"
 			p.i++
-			if scope != nil && syntaxIdentifier(p.word(0)) {
-				scope.bindings[parameterName(p.word(0))] = nil
+			if syntaxIdentifier(p.word(0)) {
+				p.declarationNames(scope, trackVariable)
 			}
-			p.skipDeclaration(scope)
+			if !p.skipDeclaration(scope) && trackVariable {
+				p.incompleteVariables++
+			}
 		default:
 			if p.word(0) == "inherited" && syntaxOneOf(p.word(1), ";", "end", "else") {
 				scope.useAll()

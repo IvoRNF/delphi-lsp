@@ -367,7 +367,7 @@ func Parse(uri, text string) *Document {
 	document.Diagnostics = append(document.Diagnostics, localVariableTokenDiagnostics(tokens)...)
 	document.Diagnostics = append(document.Diagnostics, lexicalDiagnostics...)
 	document.Diagnostics = append(document.Diagnostics, parameterTokenDiagnostics(tokens)...)
-	document.Diagnostics = append(document.Diagnostics, unusedParameterTokenDiagnostics(tokens)...)
+	document.Diagnostics = append(document.Diagnostics, unusedDeclarationTokenDiagnostics(tokens)...)
 	if conditionalDepth != 1 {
 		document.Diagnostics = append(document.Diagnostics, Diagnostic{Severity: 1, Source: "delphi-lsp", Message: "Unclosed compiler directive ({$IFDEF / {$IFNDEF)"})
 	}
