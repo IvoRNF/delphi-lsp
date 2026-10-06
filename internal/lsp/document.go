@@ -56,6 +56,11 @@ type routineContext struct {
 
 var declaration = regexp.MustCompile(`(?i)^\s*(procedure|function|constructor|destructor|type|var|const|property)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(.*)$`)
 
+// A forward or external routine declares no body. It must not open a routine
+// scope, or every following sibling declaration would be treated as its local
+// and the routine that really owns them would never close.
+var bodylessRoutine = regexp.MustCompile(`(?i)\b(forward|external)\b`)
+
 // Delphi permits the last field in a record (and the last declaration in a
 // var block) to omit its trailing semicolon.
 var typedVariable = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:\s*([^;]+?)(?:\s*;|\s*$)`)
@@ -73,6 +78,12 @@ func Parse(uri, text string) *Document {
 	// rather than null (which some clients, including Neovim, cannot handle).
 	lines := strings.Split(text, "\n")
 	document := &Document{URI: uri, Text: text, Lines: lines, Diagnostics: []Diagnostic{}}
+	// Tokenize once per document. Besides the diagnostic passes below, the token
+	// stream provides accurate block depth so routine scopes close on the `end`
+	// that really terminates the routine body.
+	tokens, lexicalDiagnostics := scanSyntax(text)
+	blockDeltas := blockLineDeltas(tokens)
+	bodyOpenerLines := blockOpenerLines(tokens)
 	declarationText, conditionalDepth := declarationSource(text)
 	inVarSection, inConstSection, routineBody := false, false, false
 	inTypeSection := false
@@ -243,12 +254,13 @@ func Parse(uri, text string) *Document {
 				kind = symbolProperty
 			}
 			isRoutine := kind == symbolFunction && currentType == ""
+			bodyless := isRoutine && bodylessRoutine.MatchString(match[3])
 			if currentType != "" && kind == symbolFunction {
 				kind = symbolMethod
 			}
-			if isRoutine && currentRoutine >= 0 {
+			if isRoutine && !bodyless && currentRoutine >= 0 {
 				routineStack = append(routineStack, routineContext{index: currentRoutine, body: routineBody, depth: routineDepth})
-			} else if isRoutine {
+			} else if isRoutine && !bodyless {
 				closeRoutine(lineNumber - 1)
 			}
 			owner := ""
@@ -277,6 +289,11 @@ func Parse(uri, text string) *Document {
 			implementationOnly := inImplementation && (kind == symbolFunction || ((kind == symbolVariable || kind == symbolConstant || kind == symbolClass) && owner == ""))
 			symbol := Symbol{Name: name, Detail: strings.TrimSpace(match[1] + " " + rawName + match[3]), Documentation: summaryBefore(lines, lineNumber), Owner: owner, Kind: kind, Range: Range{Start: Position{Line: lineNumber}, End: endPosition(lineNumber)}, Selection: selection, Scope: Range{Start: selection.Start, End: endPosition(len(lines) - 1)}, Implementation: implementationOnly}
 			document.Symbols = append(document.Symbols, symbol)
+			if bodyless {
+				// A forward/external header has no body: confine its scope to
+				// the header line so it cannot shadow later routines' locals.
+				document.Symbols[len(document.Symbols)-1].Scope.End = endPosition(lineNumber)
+			}
 			if word == "type" && (strings.Contains(strings.ToLower(match[3]), "= class") || strings.Contains(strings.ToLower(match[3]), "= record")) {
 				closeType(lineNumber - 1)
 				currentType, currentTypeIndex = name, len(document.Symbols)-1
@@ -284,7 +301,12 @@ func Parse(uri, text string) *Document {
 				continue
 			}
 			if isRoutine {
-				currentRoutine = len(document.Symbols) - 1
+				// Index parameters and the function result for a bodyless
+				// header, but keep the enclosing routine current: a forward
+				// declaration has no body and owns no nested declarations.
+				if !bodyless {
+					currentRoutine = len(document.Symbols) - 1
+				}
 				addParameters(document, lines, lineNumber, name)
 				if word == "function" {
 					addFunctionResult(document, match[3], lineNumber, selection, name)
@@ -292,7 +314,7 @@ func Parse(uri, text string) *Document {
 				// Interface signatures have no body or nested declarations. End
 				// their scope here so the next public routine/type is not treated
 				// as a local of this one (LogText followed by LogTextFmt).
-				if inInterface {
+				if inInterface && !bodyless {
 					closeRoutine(lineNumber)
 				}
 				inVarSection, inConstSection = false, false
@@ -323,14 +345,15 @@ func Parse(uri, text string) *Document {
 			if inConstSection && addConstants(document, line, lineNumber, document.Symbols[currentRoutine].Name, false) {
 				continue
 			}
-			lower := strings.ToLower(trimmed)
-			if strings.Contains(lower, "begin") {
+			if !routineBody && bodyOpenerLines[lineNumber] {
 				routineBody = true
-				routineDepth += strings.Count(lower, "begin")
 				inVarSection, inConstSection = false, false
 			}
-			if routineBody && strings.HasPrefix(lower, "end") {
-				routineDepth--
+			if routineBody {
+				// Block depth comes from the token stream so try/except,
+				// try/finally, case, asm and inline type bodies each consume
+				// their own `end` instead of closing the routine early.
+				routineDepth += blockDeltas[lineNumber]
 				if routineDepth <= 0 {
 					closeRoutine(lineNumber)
 				}
@@ -360,8 +383,7 @@ func Parse(uri, text string) *Document {
 	}
 	closeRoutine(len(lines) - 1)
 	closeType(len(lines) - 1)
-	// Diagnostic passes only read tokens, so tokenize once per document.
-	tokens, lexicalDiagnostics := scanSyntax(text)
+	// The diagnostic passes and the block depth above share one token stream.
 	document.Diagnostics = append(document.Diagnostics, semicolonTokenDiagnostics(tokens)...)
 	document.Diagnostics = append(document.Diagnostics, unitTokenDiagnostics(uri, tokens)...)
 	document.Diagnostics = append(document.Diagnostics, localVariableTokenDiagnostics(tokens)...)

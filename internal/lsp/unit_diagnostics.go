@@ -140,6 +140,76 @@ func (p *unitParser) abbreviatedClass() bool {
 	return false
 }
 
+// opensBlock reports whether the token at p.i begins a block that is closed by
+// `end` (or `until`, for repeat). The symbol parser shares these rules so it
+// does not mistake an inner try/except, try/finally, case, asm or inline type
+// body `end` for the end of the enclosing routine.
+func (p *unitParser) opensBlock(blocks []unitBlock) bool {
+	word := p.word(0)
+	push := syntaxOneOf(word, "begin", "try", "repeat", "asm")
+	if word == "case" {
+		// A variant record's case shares the record's closing end.
+		push = len(blocks) == 0 || blocks[len(blocks)-1].word != "record"
+	}
+	typeInterface := word == "interface" && p.word(-1) == "="
+	if word == "record" && p.word(-1) != ":" || word == "object" && p.word(-1) != "of" || typeInterface || word == "dispinterface" {
+		push = true
+	}
+	if word == "class" && !syntaxOneOf(p.word(1), "of", ";", "procedure", "function", "constructor", "destructor", "operator", "var", "property") {
+		// Generic constraints (T: class) do not introduce a class body.
+		push = p.word(-1) == "=" && !p.abbreviatedClass()
+	}
+	if (typeInterface || word == "dispinterface") && p.word(1) == ";" {
+		push = false
+	}
+	return push
+}
+
+// blockLineDeltas returns the net number of `end`/`until`-terminated blocks
+// opened on each zero-based source line, so callers can track block depth using
+// the token stream instead of counting textual `begin`/`end` occurrences.
+func blockLineDeltas(tokens []syntaxToken) map[int]int {
+	deltas := map[int]int{}
+	parser := unitParser{tokens: tokens}
+	var blocks []unitBlock
+	for parser.i = 0; parser.i < len(tokens); {
+		word := parser.word(0)
+		if word == "end" || word == "until" {
+			if len(blocks) > 0 {
+				blocks = blocks[:len(blocks)-1]
+				deltas[tokens[parser.i].span.Start.Line]--
+			}
+			parser.i++
+			continue
+		}
+		if !parser.opensBlock(blocks) {
+			parser.i++
+			continue
+		}
+		blocks = append(blocks, unitBlock{word: word, index: parser.i})
+		deltas[tokens[parser.i].span.Start.Line]++
+		parser.i++
+		if word == "asm" {
+			for parser.word(0) != "" && parser.word(0) != "end" {
+				parser.i++
+			}
+		}
+	}
+	return deltas
+}
+
+// blockOpenerLines marks source lines that contain a begin or asm token, which
+// is where a routine body starts.
+func blockOpenerLines(tokens []syntaxToken) map[int]bool {
+	lines := map[int]bool{}
+	for _, token := range tokens {
+		if token.text == "begin" || token.text == "asm" {
+			lines[token.span.Start.Line] = true
+		}
+	}
+	return lines
+}
+
 func (p *unitParser) parse() {
 	if p.word(0) == "unit" {
 		p.i++
@@ -247,21 +317,7 @@ func (p *unitParser) parse() {
 			closed = true
 			break
 		}
-		push := syntaxOneOf(word, "begin", "try", "repeat", "asm")
-		if word == "case" {
-			// A variant record's case shares the record's closing end.
-			push = len(blocks) == 0 || blocks[len(blocks)-1].word != "record"
-		}
-		if word == "record" && p.word(-1) != ":" || word == "object" && p.word(-1) != "of" || typeInterface || word == "dispinterface" {
-			push = true
-		}
-		if word == "class" && !syntaxOneOf(p.word(1), "of", ";", "procedure", "function", "constructor", "destructor", "operator", "var", "property") {
-			// Generic constraints (T: class) do not introduce a class body.
-			push = p.word(-1) == "=" && !p.abbreviatedClass()
-		}
-		if (typeInterface || word == "dispinterface") && p.word(1) == ";" {
-			push = false
-		}
+		push := p.opensBlock(blocks)
 		if push {
 			if word == "begin" && section == "interface" {
 				p.report("Routine bodies are not allowed in the interface section")

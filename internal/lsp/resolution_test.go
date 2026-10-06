@@ -22,6 +22,99 @@ end;
 	}
 }
 
+// A routine body must not be closed by an `end` that terminates an inner
+// try/except, try/finally, case or asm block. Otherwise locals declared before
+// the block stop resolving after it.
+func TestDefinitionResolvesLocalAfterNestedBlocks(t *testing.T) {
+	document := Parse("file:///blocks.pas", `
+procedure Run;
+var
+  Value: Integer;
+begin
+  try
+    Value := 1;
+  except
+    Value := 2;
+  end;
+  try
+    Value := 3;
+  finally
+    Value := 4;
+  end;
+  case Value of
+    1: Value := 5;
+  end;
+  Value := 6;
+end;
+`)
+	server := &Server{docs: map[string]*Document{document.URI: document}}
+	locations := server.definitionLocations(document, Position{Line: 18, Character: 4}, "Value")
+	if len(locations) != 1 || locations[0].Range.Start.Line != 3 {
+		t.Fatalf("definition after nested blocks = %#v", locations)
+	}
+}
+
+func TestDefinitionResolvesLocalAfterInlineAssembly(t *testing.T) {
+	document := Parse("file:///asm.pas", `
+procedure Run;
+var
+  Value: Integer;
+begin
+  asm
+    nop
+  end;
+  Value := 1;
+end;
+`)
+	server := &Server{docs: map[string]*Document{document.URI: document}}
+	locations := server.definitionLocations(document, Position{Line: 8, Character: 4}, "Value")
+	if len(locations) != 1 || locations[0].Range.Start.Line != 3 {
+		t.Fatalf("definition after asm block = %#v", locations)
+	}
+}
+
+// A forward declaration has no body, so it must neither own the declarations
+// that follow it nor keep the enclosing routine open past its own end.
+func TestForwardDeclarationDoesNotOwnFollowingDeclarations(t *testing.T) {
+	document := Parse("file:///forward.pas", `
+procedure Outer;
+var
+  Value: Integer;
+  procedure Inner; forward;
+  procedure Helper;
+  begin
+  end;
+begin
+  try
+    Value := 1;
+  except
+  end;
+  Value := 2;
+end;
+
+procedure Next;
+begin
+end;
+`)
+	server := &Server{docs: map[string]*Document{document.URI: document}}
+	locations := server.definitionLocations(document, Position{Line: 13, Character: 4}, "Value")
+	if len(locations) != 1 || locations[0].Range.Start.Line != 3 {
+		t.Fatalf("definition after forward declaration = %#v", locations)
+	}
+	for _, symbol := range document.Symbols {
+		switch symbol.Name {
+		case "Outer":
+			if symbol.Scope.End.Line != 14 {
+				t.Fatalf("Outer scope end = %d, want 14", symbol.Scope.End.Line)
+			}
+		case "Inner":
+			if symbol.Selection.Start.Line == 4 && symbol.Scope.End.Line != 4 {
+				t.Fatalf("forward Inner scope end = %d, want 4", symbol.Scope.End.Line)
+			}
+		}
+	}
+}
+
 func TestDefinitionPrefersMultilineParametersAndLocalConstantsOverGlobalSymbols(t *testing.T) {
 	local := Parse("file:///millenium_estampas.pas", `
 procedure Verifica_ExclusaoEstampa(Input: IwtsInput; Output: IwtsOutput;
