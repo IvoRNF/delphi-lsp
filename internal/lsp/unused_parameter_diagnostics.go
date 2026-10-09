@@ -45,6 +45,9 @@ type unusedParameterParser struct {
 	unitParser
 	warnings            []Diagnostic
 	incompleteVariables int
+	// resultStack holds one frame per routine currently being walked so that a
+	// Result assignment is attributed to the function that really owns it.
+	resultStack []*resultCheck
 }
 
 func unusedDeclarationTokenDiagnostics(tokens []syntaxToken) []Diagnostic {
@@ -164,11 +167,13 @@ func (p *unusedParameterParser) skipDeclaration(scope *parameterScope) bool {
 }
 
 func (p *unusedParameterParser) routine(parent *parameterScope, implementation bool) {
+	keyword, nameToken := p.word(0), p.tokens[p.i]
 	p.i++
 	scope := newParameterScope(parent)
 	// Anonymous routines start directly with '(' / ':' / 'begin'.
+	name := ""
 	if syntaxIdentifier(p.word(0)) && p.word(0) != "asm" {
-		name := parameterName(p.word(0))
+		name, nameToken = parameterName(p.word(0)), p.tokens[p.i]
 		if parent != nil {
 			parent.bindings[name] = nil
 		}
@@ -176,12 +181,14 @@ func (p *unusedParameterParser) routine(parent *parameterScope, implementation b
 			if p.word(0) == "<" {
 				p.skipVariableGroup()
 			} else {
-				name = parameterName(p.word(0))
+				name, nameToken = parameterName(p.word(0)), p.tokens[p.i]
 				p.i++
 			}
 		}
 		scope.bindings[name] = nil // Assignment to a function's own name.
 	}
+	frame := p.pushResultFrame(keyword, name, nameToken, implementation)
+	defer p.popResultFrame()
 	var parameters []*parameterUse
 	errorsBefore := len(p.diagnostics)
 	incompleteVariablesBefore := p.incompleteVariables
@@ -221,6 +228,7 @@ func (p *unusedParameterParser) routine(parent *parameterScope, implementation b
 			})
 		}
 	}
+	p.reportResult(frame)
 }
 
 func (p *unusedParameterParser) reportUnusedVariables(scope *parameterScope) {
@@ -243,6 +251,13 @@ func (p *unusedParameterParser) reference(scope *parameterScope) {
 // Walk balanced executable blocks, preserving lexical scopes for nested and
 // anonymous routines. Reads, writes and passing an argument all count as use.
 func (p *unusedParameterParser) body(scope *parameterScope) bool {
+	frame := p.currentResultFrame()
+	if frame != nil && frame.bodyStart < 0 {
+		// The first body call of a routine is its own begin/asm block. Nested
+		// blocks reach here later with bodyStart already set.
+		frame.bodyStart = p.i
+		frame.assembly = p.word(0) == "asm"
+	}
 	assembly := p.word(0) == "asm"
 	if assembly {
 		scope.useAll()
@@ -251,6 +266,9 @@ func (p *unusedParameterParser) body(scope *parameterScope) bool {
 	for p.word(0) != "" {
 		if p.word(0) == "end" {
 			p.i++
+			if frame != nil {
+				frame.bodyEnd = p.i
+			}
 			return true
 		}
 		if assembly {
@@ -281,6 +299,7 @@ func (p *unusedParameterParser) body(scope *parameterScope) bool {
 			if p.word(0) == "inherited" && syntaxOneOf(p.word(1), ";", "end", "else") {
 				scope.useAll()
 			}
+			p.trackResultUse()
 			p.reference(scope)
 			p.i++
 		}

@@ -13,6 +13,13 @@ A small, dependency-free Delphi/Object Pascal language server written in Go. It 
   assignments, and passing a name to another routine count as use. Nested
   routines respect parameter and local-variable scope; declarations without
   bodies are excluded.
+- Warning for named functions whose body never assigns the implicit `Result`
+  variable, reported at the routine name. `Result :=`, assignment to the
+  function's own name and `Exit(value)` all count as assignment, as do member or
+  element writes, results passed to a routine (`SetLength(Result, N)`) and
+  assembler bodies. Interface declarations, `forward`/`external` headers and
+  bodies that always raise are excluded, and nested routines are scoped so a
+  `Result` assignment belongs to the function that owns it.
 - Error diagnostics for missing `;` separators in executable Pascal statements,
   including multiline commands and nested control-flow blocks. Comments and
   strings are ignored, and optional separators before `end` / `until` and
