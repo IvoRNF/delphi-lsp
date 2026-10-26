@@ -580,7 +580,7 @@ func (s *Server) lookup(m rpcMessage) {
 		}
 		var symbol *Symbol
 		if len(hits) > 0 {
-			symbol = s.symbolAtLocation(d, hits[0])
+			symbol = s.symbolAtLocation(d, hits[0], word)
 		}
 		if symbol == nil {
 			symbol = s.symbolNamed(word)

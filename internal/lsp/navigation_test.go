@@ -92,6 +92,35 @@ end.
 	}
 }
 
+// A function's implicit Result symbol reuses the function-name range. Symbols
+// are sorted by name, so "Result" precedes most routine names and used to win
+// the location lookup, making hover show "Result: string" instead of the
+// routine signature.
+func TestRoutineHoverSkipsSyntheticResultAtSameSelection(t *testing.T) {
+	document := Parse("file:///unit.pas", `
+unit Unit1;
+interface
+function removeMask(const Text: string): string;
+implementation
+function removeMask(const Text: string): string;
+begin
+  Result := Text;
+end;
+end.
+`)
+	server := NewServer(nil, nil)
+	server.indexReplace(document.URI, document)
+
+	locations := server.definitionLocations(document, Position{Line: 3, Character: 10}, "removeMask")
+	if len(locations) != 1 || locations[0].Range.Start.Line != 5 {
+		t.Fatalf("definition for removeMask = %#v", locations)
+	}
+	symbol := server.symbolAtLocation(document, locations[0], "removeMask")
+	if symbol == nil || symbol.Kind != symbolFunction || symbol.Name != "removeMask" {
+		t.Fatalf("routine hover symbol = %#v", symbol)
+	}
+}
+
 func TestDefinitionLocationsDeduplicateEquivalentFileURIs(t *testing.T) {
 	text := "unit Sample;\ninterface\ntype\n  TSample = class;\nimplementation\nend.\n"
 	first := Parse("file:///C:/work/Sample.pas", text)
