@@ -2,7 +2,7 @@
   "name": "delphi-lsp",
   "displayName": "GO Delphi LSP Server",
   "description": "Language support for Delphi and Object Pascal powered by the bundled delphi-lsp server.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "ITLC-IVORNF",
   "icon": "icon.png",
   "license": "MIT",
@@ -29,14 +29,28 @@
     "languages": [
       {
         "id": "delphi",
-        "aliases": ["Delphi", "Object Pascal"],
-        "extensions": [".pas", ".dpr", ".dpk", ".dproj", ".inc"],
+        "aliases": [
+          "Delphi",
+          "Object Pascal"
+        ],
+        "extensions": [
+          ".pas",
+          ".dpr",
+          ".dpk",
+          ".dproj",
+          ".inc"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "pascal",
-        "aliases": ["Pascal"],
-        "extensions": [".pp", ".lpr"],
+        "aliases": [
+          "Pascal"
+        ],
+        "extensions": [
+          ".pp",
+          ".lpr"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -53,7 +67,9 @@
           "type": "array",
           "default": [],
           "scope": "window",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Extra arguments passed to the language server."
         },
         "delphiLsp.configPath": {
@@ -78,14 +94,18 @@
           "type": "array",
           "default": [],
           "scope": "resource",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "markdownDescription": "Additional source directories to index. Relative paths are resolved from the first workspace folder. Ignored when `delphiLsp.configPath` is set."
         },
         "delphiLsp.includePaths": {
           "type": "array",
           "default": [],
           "scope": "resource",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "markdownDescription": "Additional include directories. Relative paths are resolved from the first workspace folder. Ignored when `delphiLsp.configPath` is set."
         }
       }
